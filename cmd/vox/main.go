@@ -17,6 +17,7 @@ import (
 	"vox/internal/config"
 	"vox/internal/hotkey"
 	"vox/internal/inject"
+	"vox/internal/pipeline"
 	"vox/internal/transcribe"
 )
 
@@ -111,15 +112,22 @@ func run() {
 	}
 	fmt.Println()
 
+	// Build the processing pipeline.
+	pipe := pipeline.New(
+		transcribeStage(client),
+		filterBlankStage(),
+		injectStage(),
+	)
+
 	// Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	// Run event loop on a separate goroutine (listener.Start blocks the main thread).
 	if cfg.HoldToTalk {
-		go runHoldToTalk(ctx, cfg, logger, listener, recorder, client, sigCh)
+		go runHoldToTalk(ctx, cfg, logger, listener, recorder, pipe, sigCh)
 	} else {
-		go runToggle(ctx, cfg, logger, listener, recorder, client, sigCh)
+		go runToggle(ctx, cfg, logger, listener, recorder, pipe, sigCh)
 	}
 
 	// Start CGEventTap on the main thread (blocks forever).
@@ -157,7 +165,7 @@ func runHoldToTalk(
 	logger *slog.Logger,
 	listener *hotkey.Listener,
 	recorder *audio.Recorder,
-	client *transcribe.Client,
+	pipe *pipeline.Pipeline,
 	sigCh <-chan os.Signal,
 ) {
 	for {
@@ -180,7 +188,7 @@ func runHoldToTalk(
 				continue
 			}
 			audio.PlayStopSound()
-			handleStopAndTranscribe(ctx, cfg, logger, recorder, client)
+			handleStopAndProcess(ctx, cfg, logger, recorder, pipe)
 		}
 	}
 }
@@ -191,7 +199,7 @@ func runToggle(
 	logger *slog.Logger,
 	listener *hotkey.Listener,
 	recorder *audio.Recorder,
-	client *transcribe.Client,
+	pipe *pipeline.Pipeline,
 	sigCh <-chan os.Signal,
 ) {
 	for {
@@ -202,7 +210,7 @@ func runToggle(
 		case <-listener.Keydown():
 			if recorder.IsRecording() {
 				audio.PlayStopSound()
-				handleStopAndTranscribe(ctx, cfg, logger, recorder, client)
+				handleStopAndProcess(ctx, cfg, logger, recorder, pipe)
 			} else {
 				if cfg.Verbose {
 					logger.Debug("hotkey pressed, starting recording (toggle mode)")
@@ -219,12 +227,12 @@ func runToggle(
 	}
 }
 
-func handleStopAndTranscribe(
+func handleStopAndProcess(
 	ctx context.Context,
 	cfg config.Config,
 	logger *slog.Logger,
 	recorder *audio.Recorder,
-	client *transcribe.Client,
+	pipe *pipeline.Pipeline,
 ) {
 	fmt.Println("Transcribing...")
 
@@ -244,26 +252,51 @@ func handleStopAndTranscribe(
 		logger.Debug("recorded audio", "bytes", len(wavData))
 	}
 
-	text, err := client.Transcribe(ctx, wavData)
-	if err != nil {
-		fmt.Printf("Error transcribing: %v\n", err)
+	r := &pipeline.Result{RawAudio: wavData}
+	if err := pipe.Run(ctx, r); err != nil {
+		fmt.Printf("Error processing: %v\n", err)
 		fmt.Println("Ready!")
 		return
 	}
 
-	if text == "" || isBlankAudio(text) {
+	if r.Cancelled {
 		fmt.Println("(no speech detected)")
-		fmt.Println("Ready!")
-		return
-	}
-
-	fmt.Printf(">>> %s\n", text)
-
-	if err := inject.TypeText(text); err != nil {
-		fmt.Printf("Error pasting text: %v\n", err)
 	}
 
 	fmt.Println("Ready!")
+}
+
+// transcribeStage returns a pipeline stage that sends audio to the Whisper API.
+func transcribeStage(client *transcribe.Client) pipeline.Stage {
+	return func(ctx context.Context, r *pipeline.Result) error {
+		text, err := client.Transcribe(ctx, r.RawAudio)
+		if err != nil {
+			return err
+		}
+		r.RawText = text
+		r.OutputText = text
+		return nil
+	}
+}
+
+// filterBlankStage returns a pipeline stage that cancels processing when the
+// transcription is blank or a whisper hallucination artifact.
+func filterBlankStage() pipeline.Stage {
+	return func(_ context.Context, r *pipeline.Result) error {
+		if r.RawText == "" || isBlankAudio(r.RawText) {
+			r.Cancelled = true
+		}
+		return nil
+	}
+}
+
+// injectStage returns a pipeline stage that pastes the output text into the
+// focused application via the system clipboard.
+func injectStage() pipeline.Stage {
+	return func(_ context.Context, r *pipeline.Result) error {
+		fmt.Printf(">>> %s\n", r.OutputText)
+		return inject.TypeText(r.OutputText)
+	}
 }
 
 // isBlankAudio returns true if the transcription is a whisper hallucination
