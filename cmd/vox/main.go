@@ -27,7 +27,7 @@ const banner = `
  \ \ / / _ \ \/ /
   \ V / (_) >  <
    \_/ \___/_/\_\
-  speech-to-text
+  voice-activated AI
 `
 
 func main() {
@@ -44,6 +44,12 @@ func run() {
 			return
 		case "config":
 			runConfig()
+			return
+		case "help", "--help", "-h":
+			runHelp()
+			return
+		case "version", "--version":
+			fmt.Println("vox 2.0.0-dev (Moonshots XXIII)")
 			return
 		}
 	}
