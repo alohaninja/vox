@@ -62,6 +62,9 @@ var promptPrefixes = []struct {
 }
 
 // commandPrefixes maps trigger phrases to action names.
+// Prefixes ending with a trailing space consume that space and capture everything
+// after it as RawArgs. Prefixes without a trailing space require a word boundary
+// (end-of-string or space) to avoid matching partial words like "open a preview".
 var commandPrefixes = []struct {
 	prefix string
 	action string
@@ -70,9 +73,13 @@ var commandPrefixes = []struct {
 	{"vox ", "vox"},
 	{"create a pull request", "create-pr"},
 	{"create pull request", "create-pr"},
+	{"create a pr ", "create-pr"},
 	{"create a pr", "create-pr"},
+	{"create pr ", "create-pr"},
 	{"create pr", "create-pr"},
+	{"open a pr ", "create-pr"},
 	{"open a pr", "create-pr"},
+	{"open pr ", "create-pr"},
 	{"open pr", "create-pr"},
 	{"list issues", "list-issues"},
 	{"list my issues", "list-issues"},
@@ -86,13 +93,17 @@ var commandPrefixes = []struct {
 	{"check flag ", "query-flag"},
 	{"get flag ", "query-flag"},
 	{"flag status ", "query-flag"},
-	{"open ", "open-url"},
+	{"open https://", "open-url"},
+	{"open http://", "open-url"},
+	{"open localhost:", "open-url"},
+	{"open localhost", "open-url"},
 }
 
 // Classify determines whether the transcribed text is dictation, a prompt-mode
 // query, or a voice command. It uses fast prefix matching with no API calls.
 func Classify(text string) Intent {
-	lower := strings.ToLower(strings.TrimSpace(text))
+	text = strings.TrimSpace(text)
+	lower := strings.ToLower(text)
 
 	// Check prompt prefixes first (more common than commands).
 	for _, p := range promptPrefixes {
@@ -112,13 +123,23 @@ func Classify(text string) Intent {
 	}
 
 	// Check command prefixes.
+	// Prefixes ending in a space or non-alphanumeric (like "://") pass through.
+	// Prefixes ending in a letter/digit require a word boundary (end-of-string
+	// or space) so "open a pr" doesn't match "open a presentation".
 	for _, c := range commandPrefixes {
 		if strings.HasPrefix(lower, c.prefix) {
+			rest := lower[len(c.prefix):]
+			lastChar := c.prefix[len(c.prefix)-1]
+			needsBoundary := (lastChar >= 'a' && lastChar <= 'z') || (lastChar >= '0' && lastChar <= '9')
+			if needsBoundary && rest != "" && rest[0] != ' ' {
+				continue
+			}
 			rawArgs := strings.TrimSpace(text[len(c.prefix):])
 			return Intent{
 				Mode:    ModeCommand,
 				Action:  c.action,
 				RawArgs: rawArgs,
+				// Subject intentionally empty for commands; callers use RawArgs directly.
 			}
 		}
 	}

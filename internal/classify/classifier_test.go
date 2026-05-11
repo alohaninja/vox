@@ -4,24 +4,26 @@ import "testing"
 
 func TestClassifyPromptMode(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		wantMode   Mode
-		wantAction string
+		name        string
+		input       string
+		wantMode    Mode
+		wantAction  string
+		wantSubject string
+		wantRawArgs string
 	}{
-		{"summarize clipboard", "summarize my clipboard", ModePrompt, "summarize"},
-		{"summarize clipboard alt", "Summarize clipboard", ModePrompt, "summarize"},
-		{"summarize this", "summarize this", ModePrompt, "summarize"},
-		{"summarize freeform", "summarize the meeting notes from today", ModePrompt, "summarize"},
-		{"explain error", "explain this error", ModePrompt, "explain"},
-		{"explain this", "Explain this", ModePrompt, "explain"},
-		{"explain freeform", "explain what happened in the last deploy", ModePrompt, "explain"},
-		{"rewrite as commit", "rewrite this as a commit message", ModePrompt, "rewrite"},
-		{"rewrite as", "rewrite as a haiku", ModePrompt, "rewrite"},
-		{"translate to", "translate to Spanish", ModePrompt, "translate"},
-		{"translate this to", "translate this to French", ModePrompt, "translate"},
-		{"fix grammar", "fix the grammar", ModePrompt, "fix-grammar"},
-		{"proofread", "proofread this", ModePrompt, "proofread"},
+		{"summarize clipboard", "summarize my clipboard", ModePrompt, "summarize", "clipboard", ""},
+		{"summarize clipboard alt", "Summarize clipboard", ModePrompt, "summarize", "clipboard", ""},
+		{"summarize this", "summarize this", ModePrompt, "summarize", "this", ""},
+		{"summarize freeform", "summarize the meeting notes from today", ModePrompt, "summarize", "the meeting notes from today", "the meeting notes from today"},
+		{"explain error", "explain this error", ModePrompt, "explain", "error", ""},
+		{"explain this", "Explain this", ModePrompt, "explain", "this", ""},
+		{"explain freeform", "explain what happened in the last deploy", ModePrompt, "explain", "what happened in the last deploy", "what happened in the last deploy"},
+		{"rewrite as commit", "rewrite this as a commit message", ModePrompt, "rewrite", "a commit message", "a commit message"},
+		{"rewrite as", "rewrite as a haiku", ModePrompt, "rewrite", "a haiku", "a haiku"},
+		{"translate to", "translate to Spanish", ModePrompt, "translate", "Spanish", "Spanish"},
+		{"translate this to", "translate this to French", ModePrompt, "translate", "French", "French"},
+		{"fix grammar", "fix the grammar", ModePrompt, "fix-grammar", "", ""},
+		{"proofread", "proofread this", ModePrompt, "proofread", "this", ""},
 	}
 
 	for _, tt := range tests {
@@ -32,6 +34,12 @@ func TestClassifyPromptMode(t *testing.T) {
 			}
 			if got.Action != tt.wantAction {
 				t.Errorf("Classify(%q).Action = %q, want %q", tt.input, got.Action, tt.wantAction)
+			}
+			if got.Subject != tt.wantSubject {
+				t.Errorf("Classify(%q).Subject = %q, want %q", tt.input, got.Subject, tt.wantSubject)
+			}
+			if got.RawArgs != tt.wantRawArgs {
+				t.Errorf("Classify(%q).RawArgs = %q, want %q", tt.input, got.RawArgs, tt.wantRawArgs)
 			}
 		})
 	}
@@ -46,9 +54,13 @@ func TestClassifyCommandMode(t *testing.T) {
 	}{
 		{"hey vox", "hey vox do something", "vox", "do something"},
 		{"vox prefix", "vox check the logs", "vox", "check the logs"},
-		{"create pr", "create a pull request for the bugfix", "create-pr", "for the bugfix"},
-		{"create pr short", "create pr", "create-pr", ""},
-		{"open pr", "open a PR", "create-pr", ""},
+		{"create pr full", "create a pull request for the bugfix", "create-pr", "for the bugfix"},
+		{"create pr exact", "create pr", "create-pr", ""},
+		{"create a pr exact", "create a pr", "create-pr", ""},
+		{"create a pr with args", "create a pr for the bugfix", "create-pr", "for the bugfix"},
+		{"open a pr exact", "open a pr", "create-pr", ""},
+		{"open a pr with args", "open a pr for feature-x", "create-pr", "for feature-x"},
+		{"open pr exact", "open pr", "create-pr", ""},
 		{"list issues", "list my issues", "list-issues", ""},
 		{"show issues", "show issues", "list-issues", ""},
 		{"create ticket", "create a ticket for the auth bug", "create-ticket", "for the auth bug"},
@@ -56,7 +68,10 @@ func TestClassifyCommandMode(t *testing.T) {
 		{"query flag", "query flag enable-new-checkout", "query-flag", "enable-new-checkout"},
 		{"check flag", "check flag dark-mode", "query-flag", "dark-mode"},
 		{"flag status", "flag status my-feature", "query-flag", "my-feature"},
-		{"open url", "open https://example.com", "open-url", "https://example.com"},
+		{"open https url", "open https://example.com", "open-url", "example.com"},
+		{"open http url", "open http://localhost:8080/api", "open-url", "localhost:8080/api"},
+		{"open localhost with port", "open localhost:3000", "open-url", "3000"},
+		{"open localhost exact", "open localhost", "open-url", ""},
 	}
 
 	for _, tt := range tests {
@@ -77,8 +92,9 @@ func TestClassifyCommandMode(t *testing.T) {
 
 func TestClassifyDictation(t *testing.T) {
 	// These should all be classified as dictation -- they contain words that
-	// look like commands but aren't in the right position.
+	// look like commands/prompts but aren't in the right position or context.
 	inputs := []string{
+		// Mid-sentence trigger words
 		"I want to explain something to my team",
 		"Let me summarize what happened yesterday in my standup",
 		"The summary of the meeting was good",
@@ -92,6 +108,20 @@ func TestClassifyDictation(t *testing.T) {
 		"The create PR workflow is broken",
 		"I need to query the database for old records",
 		"Check if the deployment is done",
+		// Word-boundary: "open a pr..." that isn't about pull requests
+		"open a presentation for tomorrow",
+		"open a preview of the site",
+		"open a private browsing window",
+		// Word-boundary: "create a pr..." / "create pr..." that isn't about PRs
+		"create a presentation deck",
+		"create problems for the team",
+		// "open" without a URL should be dictation
+		"open the door",
+		"open source software is great",
+		"open question about the design",
+		"open settings",
+		"open a file",
+		"open the discussion about pricing",
 	}
 
 	for _, input := range inputs {
@@ -133,6 +163,15 @@ func TestClassifyWhitespace(t *testing.T) {
 	got := Classify("  summarize my clipboard  ")
 	if got.Mode != ModePrompt {
 		t.Errorf("leading/trailing whitespace should be trimmed; got mode %v", got.Mode)
+	}
+	if got.Action != "summarize" {
+		t.Errorf("Action = %q, want %q", got.Action, "summarize")
+	}
+	if got.Subject != "clipboard" {
+		t.Errorf("Subject = %q, want %q", got.Subject, "clipboard")
+	}
+	if got.RawArgs != "" {
+		t.Errorf("RawArgs = %q, want empty (exact prefix match)", got.RawArgs)
 	}
 }
 
