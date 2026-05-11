@@ -7,13 +7,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
 const (
-	defaultAPIURL = "https://api.anthropic.com/v1/messages"
-	apiVersion    = "2023-06-01"
-	defaultModel  = "claude-haiku-4-5-20251001"
+	defaultAPIURL    = "https://api.anthropic.com/v1/messages"
+	apiVersion       = "2023-06-01"
+	defaultModel     = "claude-haiku-4-5-20251001"
+	defaultMaxTokens = 4096
+
+	// maxResponseBytes caps the response body read to prevent unbounded memory
+	// allocation from a misbehaving server. Claude responses with max_tokens=4096
+	// are well under 100 KB; 1 MiB is generous.
+	maxResponseBytes = 1 << 20 // 1 MiB
 )
 
 // Client is a lightweight Claude Messages API client using net/http directly.
@@ -21,6 +28,7 @@ const (
 type Client struct {
 	apiKey     string
 	model      string
+	maxTokens  int
 	apiURL     string
 	httpClient *http.Client
 }
@@ -32,12 +40,20 @@ func NewClient(apiKey, model string) *Client {
 		model = defaultModel
 	}
 	return &Client{
-		apiKey: apiKey,
-		model:  model,
-		apiURL: defaultAPIURL,
+		apiKey:    apiKey,
+		model:     model,
+		maxTokens: defaultMaxTokens,
+		apiURL:    defaultAPIURL,
 		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: 30 * time.Second,
 		},
+	}
+}
+
+// SetMaxTokens overrides the default max_tokens for API requests.
+func (c *Client) SetMaxTokens(n int) {
+	if n > 0 {
+		c.maxTokens = n
 	}
 }
 
@@ -55,8 +71,9 @@ type message struct {
 }
 
 type messagesResponse struct {
-	Content []contentBlock `json:"content"`
-	Error   *apiError      `json:"error,omitempty"`
+	Content    []contentBlock `json:"content"`
+	StopReason string         `json:"stop_reason,omitempty"`
+	Error      *apiError      `json:"error,omitempty"`
 }
 
 type contentBlock struct {
@@ -73,12 +90,12 @@ type apiError struct {
 // and returns the text response.
 func (c *Client) Complete(ctx context.Context, system, userMessage string) (string, error) {
 	if c.apiKey == "" {
-		return "", fmt.Errorf("ANTHROPIC_API_KEY not set")
+		return "", fmt.Errorf("claude: API key is empty")
 	}
 
 	reqBody := messagesRequest{
 		Model:     c.model,
-		MaxTokens: 1024,
+		MaxTokens: c.maxTokens,
 		System:    system,
 		Messages: []message{
 			{Role: "user", Content: userMessage},
@@ -104,7 +121,7 @@ func (c *Client) Complete(ctx context.Context, system, userMessage string) (stri
 	}
 	defer resp.Body.Close()
 
-	respBytes, err := io.ReadAll(resp.Body)
+	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
@@ -122,9 +139,17 @@ func (c *Client) Complete(ctx context.Context, system, userMessage string) (stri
 		return "", fmt.Errorf("claude API error: %s: %s", result.Error.Type, result.Error.Message)
 	}
 
+	if result.StopReason == "max_tokens" {
+		return "", fmt.Errorf("claude response truncated (max_tokens=%d reached)", c.maxTokens)
+	}
+
 	for _, block := range result.Content {
 		if block.Type == "text" {
-			return block.Text, nil
+			text := strings.TrimSpace(block.Text)
+			if text == "" {
+				return "", fmt.Errorf("claude returned empty text content")
+			}
+			return text, nil
 		}
 	}
 
