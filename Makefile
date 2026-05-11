@@ -1,4 +1,4 @@
-.PHONY: build test test-short lint run setup start clean install deps fmt ci check-fmt
+.PHONY: build test test-short test-race lint run setup start clean install deps fmt ci check-fmt
 
 export CGO_LDFLAGS := -Wl,-no_warn_duplicate_libraries
 
@@ -10,6 +10,9 @@ test:
 
 test-short:
 	go test -short -v ./...
+
+test-race:
+	go test -race -short -v ./...
 
 lint:
 	go vet ./...
@@ -100,5 +103,5 @@ check-fmt:
 		exit 1; \
 	fi
 
-ci: build lint check-fmt test-short
+ci: build lint check-fmt test-race
 	@echo "All CI checks passed."

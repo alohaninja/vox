@@ -6,10 +6,10 @@ on:
   push:
     branches: [main]
 
-# Cancel in-progress runs for the same PR/branch.
+# Cancel in-progress runs for the same PR/branch (but not main pushes).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ── Build ──────────────────────────────────────────────────────────────
@@ -29,7 +29,13 @@ jobs:
         run: go build -o bin/vox ./cmd/vox
 
       - name: Verify binary runs
-        run: bin/vox setup 2>&1 || true  # setup checks permissions; may fail in CI but shouldn't crash
+        run: |
+          bin/vox setup 2>&1; rc=$?
+          # Tolerate expected permission failures (exit 1) but catch crashes/signals (exit > 128)
+          if [ $rc -gt 128 ]; then
+            echo "::error::vox setup crashed with signal $((rc - 128))"
+            exit 1
+          fi
 
   # ── Tests ──────────────────────────────────────────────────────────────
   test:
@@ -43,9 +49,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Install recording tool
-        run: brew install sox
 
       - name: Run tests (with race detector)
         run: go test -race -short -v ./...
@@ -84,9 +87,12 @@ jobs:
           }
 
   # ── Cross-compile ─────────────────────────────────────────────────────
+  # Warning-only: expected to fail until platform stubs are added for
+  # internal/hotkey and internal/inject (darwin-only packages today).
   cross-compile:
     name: Cross-compile (${{ matrix.goos }})
     runs-on: ubuntu-latest
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -104,4 +110,4 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           CGO_ENABLED: "0"
-        run: go build -o /dev/null ./cmd/vox 2>&1 || echo "::warning::Cross-compile for ${{ matrix.goos }} failed (expected until cross-platform PR lands)"
+        run: go build -o /dev/null ./cmd/vox
