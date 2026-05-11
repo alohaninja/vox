@@ -58,7 +58,7 @@ func TestTranscribe(t *testing.T) {
 		t.Skipf("whisper server not available: %v", err)
 	}
 
-	text, err := client.Transcribe(ctx, minimalWAV)
+	text, err := client.Transcribe(ctx, minimalWAV, TranscribeOptions{})
 	if err != nil {
 		t.Fatalf("Transcribe() error: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestTranscribeHTTPError(t *testing.T) {
 	client := NewClient(srv.URL)
 	ctx := context.Background()
 
-	_, err := client.Transcribe(ctx, minimalWAV)
+	_, err := client.Transcribe(ctx, minimalWAV, TranscribeOptions{})
 	if err == nil {
 		t.Fatal("expected error for HTTP 500 response")
 	}
@@ -93,7 +93,7 @@ func TestTranscribeInvalidJSON(t *testing.T) {
 	client := NewClient(srv.URL)
 	ctx := context.Background()
 
-	_, err := client.Transcribe(ctx, minimalWAV)
+	_, err := client.Transcribe(ctx, minimalWAV, TranscribeOptions{})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
 	}
@@ -111,12 +111,73 @@ func TestTranscribeEmptyResponse(t *testing.T) {
 	client := NewClient(srv.URL)
 	ctx := context.Background()
 
-	text, err := client.Transcribe(ctx, minimalWAV)
+	text, err := client.Transcribe(ctx, minimalWAV, TranscribeOptions{})
 	if err != nil {
 		t.Fatalf("Transcribe() should not error on empty text, got: %v", err)
 	}
 	if text != "" {
 		t.Errorf("expected empty string, got %q", text)
+	}
+}
+
+func TestTranscribeWithOptions(t *testing.T) {
+	var gotPrompt, gotLang string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		gotPrompt = r.FormValue("initial_prompt")
+		gotLang = r.FormValue("language")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text": "hello"}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	opts := TranscribeOptions{
+		InitialPrompt: "The following terms may appear: flagbearer, gonfalon.",
+		Language:      "en",
+	}
+	text, err := client.Transcribe(context.Background(), minimalWAV, opts)
+	if err != nil {
+		t.Fatalf("Transcribe() error: %v", err)
+	}
+	if text != "hello" {
+		t.Errorf("unexpected text: %q", text)
+	}
+	if gotPrompt != opts.InitialPrompt {
+		t.Errorf("initial_prompt = %q, want %q", gotPrompt, opts.InitialPrompt)
+	}
+	if gotLang != "en" {
+		t.Errorf("language = %q, want %q", gotLang, "en")
+	}
+}
+
+func TestTranscribeWithoutOptions(t *testing.T) {
+	var hasPrompt, hasLang bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_, hasPrompt = r.MultipartForm.Value["initial_prompt"]
+		_, hasLang = r.MultipartForm.Value["language"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text": "hello"}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	_, err := client.Transcribe(context.Background(), minimalWAV, TranscribeOptions{})
+	if err != nil {
+		t.Fatalf("Transcribe() error: %v", err)
+	}
+	if hasPrompt {
+		t.Error("initial_prompt should not be sent when empty")
+	}
+	if hasLang {
+		t.Error("language should not be sent when empty")
 	}
 }
 

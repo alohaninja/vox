@@ -44,8 +44,14 @@ type transcriptionResponse struct {
 	Text string `json:"text"`
 }
 
+// TranscribeOptions holds optional parameters for transcription.
+type TranscribeOptions struct {
+	InitialPrompt string // Vocabulary hint for whisper.cpp
+	Language      string // BCP-47 language code (e.g., "en")
+}
+
 // Transcribe sends WAV audio data to the Whisper API and returns the transcribed text.
-func (c *Client) Transcribe(ctx context.Context, wavData []byte) (string, error) {
+func (c *Client) Transcribe(ctx context.Context, wavData []byte, opts TranscribeOptions) (string, error) {
 	if len(wavData) == 0 {
 		return "", fmt.Errorf("empty WAV data")
 	}
@@ -71,6 +77,20 @@ func (c *Client) Transcribe(ctx context.Context, wavData []byte) (string, error)
 	// Response format field.
 	if err := writer.WriteField("response_format", "json"); err != nil {
 		return "", fmt.Errorf("write response_format field: %w", err)
+	}
+
+	// Optional: initial prompt for vocabulary hints.
+	if opts.InitialPrompt != "" {
+		if err := writer.WriteField("initial_prompt", opts.InitialPrompt); err != nil {
+			return "", fmt.Errorf("write initial_prompt field: %w", err)
+		}
+	}
+
+	// Optional: language hint.
+	if opts.Language != "" {
+		if err := writer.WriteField("language", opts.Language); err != nil {
+			return "", fmt.Errorf("write language field: %w", err)
+		}
 	}
 
 	if err := writer.Close(); err != nil {

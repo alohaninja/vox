@@ -16,6 +16,8 @@ type Config struct {
 	Verbose    bool
 	Hotkey     string
 	Triggers   []hotkey.Trigger
+	VocabTerms string // Comma-separated domain terms (VOX_VOCAB_TERMS)
+	VocabFile  string // Path to vocab file, one term per line (VOX_VOCAB_FILE)
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -35,6 +37,8 @@ func Load() Config {
 		Verbose:    parseBool(os.Getenv("VOX_VERBOSE"), false),
 		Hotkey:     hotkeyStr,
 		Triggers:   triggers,
+		VocabTerms: os.Getenv("VOX_VOCAB_TERMS"),
+		VocabFile:  os.Getenv("VOX_VOCAB_FILE"),
 	}
 }
 

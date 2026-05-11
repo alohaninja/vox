@@ -19,6 +19,7 @@ import (
 	"vox/internal/inject"
 	"vox/internal/pipeline"
 	"vox/internal/transcribe"
+	"vox/internal/vocab"
 )
 
 const banner = `
@@ -95,6 +96,24 @@ func run() {
 		os.Exit(1)
 	}
 
+	// Load custom vocabulary for whisper.cpp hints.
+	var initialPrompt string
+	if cfg.VocabTerms != "" || cfg.VocabFile != "" {
+		var err error
+		initialPrompt, err = vocab.Load(cfg.VocabTerms, cfg.VocabFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to load vocabulary: %v\n", err)
+		} else if initialPrompt != "" && cfg.Verbose {
+			logger.Debug("loaded custom vocabulary", "prompt", initialPrompt)
+		}
+	}
+
+	// Transcription options used for every request.
+	transcribeOpts := transcribe.TranscribeOptions{
+		InitialPrompt: initialPrompt,
+		Language:      cfg.Language,
+	}
+
 	// Build hotkey labels for display.
 	var labels []string
 	for _, t := range cfg.Triggers {
@@ -114,7 +133,7 @@ func run() {
 
 	// Build the processing pipeline.
 	pipe := pipeline.New(
-		transcribeStage(client),
+		transcribeStage(client, transcribeOpts),
 		filterBlankStage(),
 		injectStage(),
 	)
@@ -267,9 +286,9 @@ func handleStopAndProcess(
 }
 
 // transcribeStage returns a pipeline stage that sends audio to the Whisper API.
-func transcribeStage(client *transcribe.Client) pipeline.Stage {
+func transcribeStage(client *transcribe.Client, opts transcribe.TranscribeOptions) pipeline.Stage {
 	return func(ctx context.Context, r *pipeline.Result) error {
-		text, err := client.Transcribe(ctx, r.RawAudio)
+		text, err := client.Transcribe(ctx, r.RawAudio, opts)
 		if err != nil {
 			return fmt.Errorf("transcribing: %w", err)
 		}
