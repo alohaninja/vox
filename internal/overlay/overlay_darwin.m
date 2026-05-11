@@ -2,13 +2,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Overlay window and text field -- global references managed on the main thread.
+// Overlay window and labels -- global references.
+// All functions in this file MUST be called from the main thread.
+// The Go layer ensures this via golang.design/x/mainthread.Call.
 static NSWindow *overlayWindow = nil;
 static NSTextField *textLabel = nil;
 static NSTextField *statusLabel = nil;
 
 void overlayInit(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
         if (overlayWindow != nil) return;
 
         // Get main screen dimensions.
@@ -61,42 +63,61 @@ void overlayInit(void) {
         [textLabel setSelectable:NO];
         [textLabel setLineBreakMode:NSLineBreakByTruncatingTail];
         [overlayWindow.contentView addSubview:textLabel];
-    });
+    }
 }
 
 void overlayShow(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
         if (overlayWindow != nil) {
             [textLabel setStringValue:@""];
             [overlayWindow orderFront:nil];
         }
-    });
+    }
 }
 
 void overlayHide(void) {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
         if (overlayWindow != nil) {
             [overlayWindow orderOut:nil];
         }
-    });
+    }
 }
 
 void overlayUpdateText(const char *text) {
-    if (text == NULL) return;
-    NSString *nsText = [NSString stringWithUTF8String:text];
-    dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
+        if (text == NULL) return;
+        NSString *nsText = [[NSString alloc] initWithUTF8String:text];
+        if (nsText == nil) {
+            // Invalid UTF-8; replace with a safe fallback.
+            nsText = @"[invalid text]";
+        }
         if (textLabel != nil) {
             [textLabel setStringValue:nsText];
         }
-    });
+    }
 }
 
 void overlaySetStatus(const char *status) {
-    if (status == NULL) return;
-    NSString *nsStatus = [NSString stringWithUTF8String:status];
-    dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
+        if (status == NULL) return;
+        NSString *nsStatus = [[NSString alloc] initWithUTF8String:status];
+        if (nsStatus == nil) {
+            nsStatus = @"";
+        }
         if (statusLabel != nil) {
             [statusLabel setStringValue:nsStatus];
         }
-    });
+    }
+}
+
+void overlayClose(void) {
+    @autoreleasepool {
+        if (overlayWindow != nil) {
+            [overlayWindow orderOut:nil];
+            [overlayWindow close];
+            overlayWindow = nil;
+        }
+        textLabel = nil;
+        statusLabel = nil;
+    }
 }

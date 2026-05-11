@@ -37,4 +37,7 @@ type Overlay interface {
 
 	// SetStatus updates the overlay status indicator.
 	SetStatus(status Status)
+
+	// Close tears down the overlay and releases resources.
+	Close()
 }

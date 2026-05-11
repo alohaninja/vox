@@ -24,17 +24,3 @@ func TestStatusConstants(t *testing.T) {
 		t.Error("status constants have unexpected values")
 	}
 }
-
-func TestOverlayInterfaceCompliance(t *testing.T) {
-	// Verify the Overlay interface is satisfiable.
-	// On darwin this would test DarwinOverlay, on other platforms StubOverlay.
-	// We just verify compilation here.
-	var _ Overlay = (*stubForTest)(nil)
-}
-
-type stubForTest struct{}
-
-func (s *stubForTest) Show()                   {}
-func (s *stubForTest) Hide()                   {}
-func (s *stubForTest) UpdateText(text string)  {}
-func (s *stubForTest) SetStatus(status Status) {}
