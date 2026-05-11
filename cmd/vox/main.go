@@ -271,7 +271,7 @@ func transcribeStage(client *transcribe.Client) pipeline.Stage {
 	return func(ctx context.Context, r *pipeline.Result) error {
 		text, err := client.Transcribe(ctx, r.RawAudio)
 		if err != nil {
-			return err
+			return fmt.Errorf("transcribing: %w", err)
 		}
 		r.RawText = text
 		r.OutputText = text
@@ -291,11 +291,15 @@ func filterBlankStage() pipeline.Stage {
 }
 
 // injectStage returns a pipeline stage that pastes the output text into the
-// focused application via the system clipboard.
+// focused application via the system clipboard. Injection errors are logged
+// but not propagated — the transcription was still successful.
 func injectStage() pipeline.Stage {
 	return func(_ context.Context, r *pipeline.Result) error {
 		fmt.Printf(">>> %s\n", r.OutputText)
-		return inject.TypeText(r.OutputText)
+		if err := inject.TypeText(r.OutputText); err != nil {
+			fmt.Printf("Error pasting text: %v\n", err)
+		}
+		return nil
 	}
 }
 

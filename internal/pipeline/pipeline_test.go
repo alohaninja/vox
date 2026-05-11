@@ -108,3 +108,33 @@ func TestModeConstants(t *testing.T) {
 		t.Fatal("mode constants have unexpected values")
 	}
 }
+
+func TestContextCancellationStopsPipeline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	ran := false
+	s := func(_ context.Context, _ *Result) error { ran = true; return nil }
+
+	p := New(s)
+	err := p.Run(ctx, &Result{})
+	if err == nil {
+		t.Fatal("expected context.Canceled error, got nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+	if ran {
+		t.Fatal("stage should not have run after context cancellation")
+	}
+}
+
+func TestNilStagePanics(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for nil stage, got none")
+		}
+	}()
+	New(nil)
+}

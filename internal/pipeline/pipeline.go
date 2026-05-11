@@ -1,6 +1,9 @@
 package pipeline
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Mode represents the type of voice input.
 type Mode int
@@ -35,15 +38,23 @@ type Pipeline struct {
 	stages []Stage
 }
 
-// New creates a Pipeline with the given stages.
+// New creates a Pipeline with the given stages. It panics if any stage is nil.
 func New(stages ...Stage) *Pipeline {
+	for i, s := range stages {
+		if s == nil {
+			panic(fmt.Sprintf("pipeline: stage %d is nil", i))
+		}
+	}
 	return &Pipeline{stages: stages}
 }
 
-// Run executes each stage in order. It stops early if a stage returns an
-// error or sets r.Cancelled to true.
+// Run executes each stage in order. It stops early if the context is
+// cancelled, a stage returns an error, or a stage sets r.Cancelled to true.
 func (p *Pipeline) Run(ctx context.Context, r *Result) error {
 	for _, stage := range p.stages {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := stage(ctx, r); err != nil {
 			return err
 		}
