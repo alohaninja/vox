@@ -22,13 +22,17 @@ import (
 	"vox/internal/vocab"
 )
 
-const banner = `
+const (
+	banner = `
  __   _____ _  __
  \ \ / / _ \ \/ /
   \ V / (_) >  <
    \_/ \___/_/\_\
   voice-activated AI
 `
+	// Version is the current release identifier shown by "vox version".
+	version = "vox 2.0.0-dev (Moonshots XXIII)"
+)
 
 func main() {
 	mainthread.Init(run)
@@ -49,8 +53,11 @@ func run() {
 			runHelp()
 			return
 		case "version", "--version":
-			fmt.Println("vox 2.0.0-dev (Moonshots XXIII)")
+			fmt.Println(version)
 			return
+		default:
+			fmt.Fprintf(os.Stderr, "vox: unknown command %q\nRun 'vox help' for usage.\n", os.Args[1])
+			os.Exit(1)
 		}
 	}
 
