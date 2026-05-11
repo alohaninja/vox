@@ -87,12 +87,13 @@ jobs:
           }
 
   # ── Cross-compile ─────────────────────────────────────────────────────
-  # Warning-only: expected to fail until platform stubs are added for
-  # internal/hotkey and internal/inject (darwin-only packages today).
+  # Skipped until platform stubs are added for internal/hotkey and
+  # internal/inject (darwin-only packages today). Remove the if: guard
+  # once cross-platform support lands.
   cross-compile:
+    if: false
     name: Cross-compile (${{ matrix.goos }})
     runs-on: ubuntu-latest
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
