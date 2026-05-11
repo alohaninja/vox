@@ -2,24 +2,31 @@
 #include <stdlib.h>
 #include <string.h>
 
-// getFrontmostAppBundleID returns the bundle identifier of the frontmost app.
-// The caller must free() the returned string.
-const char* getFrontmostAppBundleID(void) {
-    @autoreleasepool {
-        NSRunningApplication *app = [[NSWorkspace sharedWorkspace] frontmostApplication];
-        NSString *bid = [app bundleIdentifier];
-        if (bid == nil) return NULL;
-        return strdup([bid UTF8String]);
-    }
+// FrontmostApp holds both the bundle ID and name from a single frontmostApplication snapshot.
+typedef struct {
+    const char* bundleID;
+    const char* name;
+} FrontmostApp;
+
+// safeStrdup copies the UTF8 representation of an NSString, returning NULL
+// if the string is nil or UTF8String fails.
+static const char* safeStrdup(NSString *s) {
+    if (s == nil) return NULL;
+    const char *utf = [s UTF8String];
+    if (utf == NULL) return NULL;
+    return strdup(utf);
 }
 
-// getFrontmostAppName returns the localized name of the frontmost app.
-// The caller must free() the returned string.
-const char* getFrontmostAppName(void) {
+// getFrontmostApp atomically captures both the bundle identifier and localized
+// name from the same NSRunningApplication instance.
+// The caller must free() each non-NULL field.
+FrontmostApp getFrontmostApp(void) {
+    FrontmostApp result = {NULL, NULL};
     @autoreleasepool {
         NSRunningApplication *app = [[NSWorkspace sharedWorkspace] frontmostApplication];
-        NSString *name = [app localizedName];
-        if (name == nil) return NULL;
-        return strdup([name UTF8String]);
+        if (app == nil) return result;
+        result.bundleID = safeStrdup([app bundleIdentifier]);
+        result.name = safeStrdup([app localizedName]);
     }
+    return result;
 }

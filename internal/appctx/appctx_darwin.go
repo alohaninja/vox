@@ -6,26 +6,31 @@ package appctx
 #cgo LDFLAGS: -framework AppKit
 #include <stdlib.h>
 
-const char* getFrontmostAppBundleID(void);
-const char* getFrontmostAppName(void);
+typedef struct {
+    const char* bundleID;
+    const char* name;
+} FrontmostApp;
+
+FrontmostApp getFrontmostApp(void);
 */
 import "C"
 
 import "unsafe"
 
 // Detect returns the currently focused application on macOS.
+// It atomically captures both the bundle ID and name from the same
+// NSRunningApplication instance to avoid TOCTOU races.
 func Detect() AppContext {
-	cbid := C.getFrontmostAppBundleID()
-	cname := C.getFrontmostAppName()
+	app := C.getFrontmostApp()
 
 	var bid, name string
-	if cbid != nil {
-		bid = C.GoString(cbid)
-		C.free(unsafe.Pointer(cbid))
+	if app.bundleID != nil {
+		bid = C.GoString(app.bundleID)
+		C.free(unsafe.Pointer(app.bundleID))
 	}
-	if cname != nil {
-		name = C.GoString(cname)
-		C.free(unsafe.Pointer(cname))
+	if app.name != nil {
+		name = C.GoString(app.name)
+		C.free(unsafe.Pointer(app.name))
 	}
 
 	return AppContext{BundleID: bid, Name: name}
