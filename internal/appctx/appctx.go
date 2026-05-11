@@ -11,7 +11,7 @@ const (
 	CategoryIDE               // Code editors and IDEs (VS Code, IntelliJ, Xcode, etc.)
 	CategoryChat              // Chat and messaging apps (Slack, Discord, Teams, etc.)
 	CategoryBrowser           // Web browsers (Safari, Chrome, Firefox, etc.)
-	CategoryEditor            // Text/document editors (Notes, TextEdit, Obsidian, etc.)
+	CategoryEditor            // Text/document editors (Notes, TextEdit, Pages, etc.)
 )
 
 // String returns a human-readable label for the category.
@@ -33,42 +33,37 @@ func (c Category) String() string {
 }
 
 // AppContext holds information about the currently focused application.
-// Note: BundleID and Name may contain privacy-sensitive information
-// (reveals active user activity). Avoid logging or transmitting without consent.
 type AppContext struct {
 	BundleID string
 	Name     string
 }
 
 // Category classifies the focused application based on its bundle ID.
-// Patterns ending with "." are treated as prefixes (e.g., "com.jetbrains."
-// matches all JetBrains products); all others are matched as prefixes too,
-// which is correct for reverse-DNS bundle identifiers.
 func (a AppContext) Category() Category {
 	bid := strings.ToLower(a.BundleID)
 
 	for _, pattern := range terminalBundleIDs {
-		if strings.HasPrefix(bid, pattern) {
+		if strings.Contains(bid, pattern) {
 			return CategoryTerminal
 		}
 	}
 	for _, pattern := range ideBundleIDs {
-		if strings.HasPrefix(bid, pattern) {
+		if strings.Contains(bid, pattern) {
 			return CategoryIDE
 		}
 	}
 	for _, pattern := range chatBundleIDs {
-		if strings.HasPrefix(bid, pattern) {
+		if strings.Contains(bid, pattern) {
 			return CategoryChat
 		}
 	}
 	for _, pattern := range browserBundleIDs {
-		if strings.HasPrefix(bid, pattern) {
+		if strings.Contains(bid, pattern) {
 			return CategoryBrowser
 		}
 	}
 	for _, pattern := range editorBundleIDs {
-		if strings.HasPrefix(bid, pattern) {
+		if strings.Contains(bid, pattern) {
 			return CategoryEditor
 		}
 	}
@@ -93,17 +88,17 @@ var ideBundleIDs = []string{
 	"dev.zed.zed",
 	"com.sublimetext.",
 	"com.cursor.",
+	"abnerworks.typora",
 }
 
 var chatBundleIDs = []string{
 	"com.tinyspeck.slackmacgap",
 	"com.hnc.discord",
-	"com.discord.",
 	"com.microsoft.teams",
 	"ru.keepcoder.telegram",
 	"com.facebook.archon",
 	"org.whispersystems.signal-desktop",
-	"com.apple.mobilesms",
+	"com.apple.messages",
 }
 
 var browserBundleIDs = []string{
@@ -122,5 +117,4 @@ var editorBundleIDs = []string{
 	"com.apple.iwork.pages",
 	"md.obsidian",
 	"com.notion.notion",
-	"abnerworks.typora",
 }
