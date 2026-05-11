@@ -68,12 +68,13 @@ func TypeText(text string) error {
 }
 
 // ReadClipboard returns the current contents of the system clipboard.
+// Trailing newlines are trimmed for consistency with clipboard semantics.
 func ReadClipboard() (string, error) {
 	out, err := exec.Command("pbpaste").Output()
 	if err != nil {
 		return "", fmt.Errorf("pbpaste: %w", err)
 	}
-	return string(out), nil
+	return strings.TrimSuffix(string(out), "\n"), nil
 }
 
 // ClearClipboard writes an empty string to the system clipboard.
