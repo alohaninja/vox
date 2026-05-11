@@ -6,8 +6,10 @@ import (
 	"testing"
 )
 
+func nopBuilder(args string) (string, []string) { return "echo", nil }
+
 func TestShellCommandMatch(t *testing.T) {
-	cmd := NewShellCommand("test", []string{"do-it", "also-do-it"}, nil)
+	cmd := NewShellCommand("test", []string{"do-it", "also-do-it"}, nopBuilder)
 
 	if !cmd.Match("do-it") {
 		t.Error("should match do-it")
@@ -21,7 +23,7 @@ func TestShellCommandMatch(t *testing.T) {
 }
 
 func TestShellCommandName(t *testing.T) {
-	cmd := NewShellCommand("my-cmd", nil, nil)
+	cmd := NewShellCommand("my-cmd", nil, nopBuilder)
 	if cmd.Name() != "my-cmd" {
 		t.Errorf("name = %q", cmd.Name())
 	}
@@ -107,10 +109,79 @@ func TestQueryFlagNoArgs(t *testing.T) {
 	cmds := DefaultCommands()
 	r := NewRegistry(cmds...)
 
-	// query-flag without args uses ldcli which likely isn't installed in test
-	// but we can test the builder logic by checking the "no args" echo path
-	// This will try to run ldcli which won't be found, so we test the error path
-	_, err := r.Execute(context.Background(), "query-flag", "")
-	// Either succeeds (echo) or fails (ldcli not found) -- both are valid
-	_ = err
+	// Empty args takes the echo path, not the ldcli path.
+	result, err := r.Execute(context.Background(), "query-flag", "")
+	if err != nil {
+		t.Fatalf("empty args should use echo path: %v", err)
+	}
+	if !strings.Contains(result, "usage: query flag") {
+		t.Errorf("expected usage message, got %q", result)
+	}
+}
+
+func TestOpenURLAllowsHTTPS(t *testing.T) {
+	cmds := DefaultCommands()
+	r := NewRegistry(cmds...)
+
+	// We can't actually call `open` in CI, but we can verify the builder
+	// produces the right command by testing the disallowed path.
+	result, err := r.Execute(context.Background(), "open-url", "file:///etc/passwd")
+	if err != nil {
+		t.Fatalf("disallowed URL should echo refusal, not error: %v", err)
+	}
+	if !strings.Contains(result, "refused to open") {
+		t.Errorf("expected refusal message for file:// URL, got %q", result)
+	}
+}
+
+func TestOpenURLRejectsFlagInjection(t *testing.T) {
+	cmds := DefaultCommands()
+	r := NewRegistry(cmds...)
+
+	result, err := r.Execute(context.Background(), "open-url", "-e")
+	if err != nil {
+		t.Fatalf("flag-like arg should echo refusal, not error: %v", err)
+	}
+	if !strings.Contains(result, "refused to open") {
+		t.Errorf("expected refusal for flag-like arg, got %q", result)
+	}
+}
+
+func TestOpenURLRejectsCustomSchemes(t *testing.T) {
+	schemes := []string{"ssh://attacker.com", "tel:+1234567890", "ftp://example.com", "/etc/passwd"}
+	cmds := DefaultCommands()
+	r := NewRegistry(cmds...)
+
+	for _, scheme := range schemes {
+		result, err := r.Execute(context.Background(), "open-url", scheme)
+		if err != nil {
+			t.Fatalf("disallowed URL %q should echo refusal: %v", scheme, err)
+		}
+		if !strings.Contains(result, "refused to open") {
+			t.Errorf("expected refusal for %q, got %q", scheme, result)
+		}
+	}
+}
+
+func TestShellCommandContextCancellation(t *testing.T) {
+	cmd := NewShellCommand("sleep-test", []string{"sleep"}, func(args string) (string, []string) {
+		return "sleep", []string{"60"}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := cmd.Execute(ctx, "")
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+}
+
+func TestNewShellCommandNilBuilderPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for nil builder")
+		}
+	}()
+	NewShellCommand("bad", []string{"bad"}, nil)
 }

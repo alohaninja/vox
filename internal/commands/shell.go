@@ -4,12 +4,19 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
 
 const shellTimeout = 30 * time.Second
+
+// maxOutputSize caps stdout/stderr capture to prevent unbounded memory growth.
+const maxOutputSize = 1 << 20 // 1 MB
+
+// allowedURLSchemes restricts which URL schemes open-url will accept.
+var allowedURLSchemes = []string{"http://", "https://"}
 
 // ShellCommand executes a shell command and returns its output.
 type ShellCommand struct {
@@ -19,8 +26,11 @@ type ShellCommand struct {
 }
 
 // NewShellCommand creates a command that matches the given actions and
-// builds a shell command from the args.
+// builds a shell command from the args. The builder must not be nil.
 func NewShellCommand(name string, actions []string, builder func(args string) (string, []string)) *ShellCommand {
+	if builder == nil {
+		panic("commands: NewShellCommand requires a non-nil builder")
+	}
 	return &ShellCommand{name: name, actions: actions, builder: builder}
 }
 
@@ -42,20 +52,58 @@ func (c *ShellCommand) Execute(ctx context.Context, args string) (string, error)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
+	cmd.WaitDelay = 5 * time.Second // prevent hanging on child processes holding pipes
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = &limitedWriter{buf: &stdout, remaining: maxOutputSize}
+	cmd.Stderr = &limitedWriter{buf: &stderr, remaining: maxOutputSize}
 
 	if err := cmd.Run(); err != nil {
 		errMsg := strings.TrimSpace(stderr.String())
 		if errMsg == "" {
 			errMsg = err.Error()
 		}
-		return "", fmt.Errorf("%s: %s", c.name, errMsg)
+		return "", fmt.Errorf("%s: %s: %w", c.name, errMsg, err)
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// isAllowedURL checks that the URL starts with an allowed scheme.
+func isAllowedURL(u string) bool {
+	lower := strings.ToLower(u)
+	for _, scheme := range allowedURLSchemes {
+		if strings.HasPrefix(lower, scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+// limitedWriter wraps a bytes.Buffer and stops writing after a byte limit.
+type limitedWriter struct {
+	buf       *bytes.Buffer
+	remaining int64
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if w.remaining <= 0 {
+		return len(p), nil // discard silently
+	}
+	if int64(len(p)) > w.remaining {
+		p = p[:w.remaining]
+	}
+	n, err := w.buf.Write(p)
+	w.remaining -= int64(n)
+	return n, err
+}
+
+// envOrDefault reads an environment variable, returning fallback if unset or empty.
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // DefaultCommands returns the built-in voice commands.
@@ -77,8 +125,9 @@ func DefaultCommands() []Command {
 			if args == "" {
 				return "echo", []string{"usage: query flag <flag-key>"}
 			}
-			// Use the LD CLI if available, otherwise curl the API.
-			return "ldcli", []string{"flags", "get", "--flag", args, "--project", "default", "--environment", "production"}
+			project := envOrDefault("LD_PROJECT", "default")
+			environment := envOrDefault("LD_ENVIRONMENT", "production")
+			return "ldcli", []string{"flags", "get", "--flag", args, "--project", project, "--environment", environment}
 		}),
 
 		NewShellCommand("create-ticket", []string{"create-ticket"}, func(args string) (string, []string) {
@@ -93,7 +142,10 @@ func DefaultCommands() []Command {
 			if args == "" {
 				return "echo", []string{"usage: open <url>"}
 			}
-			return "open", []string{args}
+			if !isAllowedURL(args) {
+				return "echo", []string{fmt.Sprintf("refused to open %q: only http:// and https:// URLs are allowed", args)}
+			}
+			return "open", []string{"--", args}
 		}),
 	}
 }
