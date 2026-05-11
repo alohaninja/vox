@@ -34,9 +34,12 @@ func runConfig() {
 		os.Exit(1)
 	}
 
-	path, _ := userconfig.Path()
 	fmt.Println()
-	fmt.Printf("Saved to %s\n", path)
+	if path, err := userconfig.Path(); err == nil {
+		fmt.Printf("Saved to %s\n", path)
+	} else {
+		fmt.Println("Saved.")
+	}
 	fmt.Println()
 	fmt.Println("Note: Set VOX_LD_SDK_KEY to enable LaunchDarkly flag overrides.")
 	fmt.Println("Note: Set ANTHROPIC_API_KEY to enable AI features.")

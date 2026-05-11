@@ -54,14 +54,17 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// Save writes the config file, creating ~/.vox/ if needed.
+// Save writes the config file atomically, creating ~/.vox/ if needed.
+// It writes to a temporary file first, then renames — so a crash can
+// never leave a truncated config.
 func Save(cfg Config) error {
 	path, err := Path()
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 
@@ -70,8 +73,15 @@ func Save(cfg Config) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write config %s: %w", path, err)
+	// Atomic write: temp file in the same directory, then rename.
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write temp config %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		// Clean up temp file on rename failure.
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename config %s: %w", path, err)
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/launchdarkly/go-sdk-common/v3/ldcontext"
+	"github.com/launchdarkly/go-sdk-common/v3/ldreason"
 	ld "github.com/launchdarkly/go-server-sdk/v7"
 	"github.com/launchdarkly/go-server-sdk/v7/ldcomponents"
 
@@ -37,6 +38,9 @@ type Client struct {
 // is nil and all flags return values from the config file or env vars.
 // This is the expected path for open-source users.
 func Init(userCfg userconfig.Config) (*Client, error) {
+	// USER is a best-effort identifier for LD targeting context.
+	// It's trivially spoofable — fine for a developer tool where the user
+	// is only affecting their own experience.
 	user := os.Getenv("USER")
 	if user == "" {
 		user = "anonymous"
@@ -67,8 +71,12 @@ func Init(userCfg userconfig.Config) (*Client, error) {
 
 	ldClient, err := ld.MakeCustomClient(sdkKey, config, 3*time.Second)
 	if err != nil {
-		// Non-fatal: tool works without flags.
-		return c, fmt.Errorf("LD client init (using defaults): %w", err)
+		// MakeCustomClient may return a usable client even on timeout.
+		// Keep it — it will finish initializing in the background.
+		// If it's nil on a hard failure, Close() is a safe no-op.
+		c.ld = ldClient
+		fmt.Fprintf(os.Stderr, "Warning: LD client init (will use defaults until ready): %v\n", err)
+		return c, nil
 	}
 	c.ld = ldClient
 	return c, nil
@@ -113,10 +121,13 @@ func (c *Client) AIModel() string {
 	const defaultModel = "claude-haiku-4-5-20251001"
 
 	if c.ld != nil {
-		val, _ := c.ld.StringVariationCtx(context.Background(), KeyAIModel, c.ctx, "")
-		if val != "" {
+		val, detail, _ := c.ld.StringVariationDetailCtx(
+			context.Background(), KeyAIModel, c.ctx, "",
+		)
+		if detail.Reason.GetKind() != ldreason.EvalReasonError && val != "" {
 			return val
 		}
+		// Flag not found, error, or empty value — fall through.
 	}
 	if v := os.Getenv("VOX_AI_MODEL"); v != "" {
 		return v
@@ -129,10 +140,21 @@ func (c *Client) AIModel() string {
 
 // boolFlag evaluates a boolean flag with the precedence chain:
 // LD flag > env var > config file pointer > hardcoded default.
+//
+// When the LD client is connected, we use BoolVariationDetailCtx to
+// distinguish "flag evaluated successfully" from "flag not found / error."
+// On error (flag missing, client not ready, etc.) we fall through to
+// env var and config file instead of returning the SDK's default.
 func (c *Client) boolFlag(key, envVar string, cfgVal *bool, defaultVal bool) bool {
 	if c.ld != nil {
-		val, _ := c.ld.BoolVariationCtx(context.Background(), key, c.ctx, defaultVal)
-		return val
+		val, detail, _ := c.ld.BoolVariationDetailCtx(
+			context.Background(), key, c.ctx, defaultVal,
+		)
+		if detail.Reason.GetKind() != ldreason.EvalReasonError {
+			// Flag was found and evaluated — use the LD result.
+			return val
+		}
+		// Flag not found or evaluation error — fall through to env/config.
 	}
 	if v := os.Getenv(envVar); v != "" {
 		return parseBool(v)

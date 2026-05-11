@@ -3,14 +3,15 @@ package userconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 func TestSaveAndLoad(t *testing.T) {
+	// Override HOME so Save()/Load() use a temp directory instead of the
+	// real ~/.vox/config.yaml.
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
+	t.Setenv("HOME", dir)
 
 	cfg := Config{
 		AIPostProcess: BoolPtr(true),
@@ -18,21 +19,35 @@ func TestSaveAndLoad(t *testing.T) {
 		AIModel:       StringPtr("claude-sonnet-4-20250514"),
 	}
 
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
 	}
 
-	raw, err := os.ReadFile(path)
+	// Verify the file was created with restrictive permissions.
+	path, err := Path()
 	if err != nil {
-		t.Fatalf("read: %v", err)
+		t.Fatalf("Path: %v", err)
 	}
-	var loaded Config
-	if err := yaml.Unmarshal(raw, &loaded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config file permissions = %o, want 0600", perm)
+	}
+
+	// Verify directory permissions.
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("Stat dir: %v", err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("config dir permissions = %o, want 0700", perm)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
 
 	if loaded.AIPostProcess == nil || *loaded.AIPostProcess != true {
@@ -50,36 +65,36 @@ func TestSaveAndLoad(t *testing.T) {
 }
 
 func TestLoadMissing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nonexistent.yaml")
-	raw, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
+	// Point HOME at a temp dir with no config file.
+	t.Setenv("HOME", t.TempDir())
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	if os.IsNotExist(err) {
-		// Expected: missing file returns zero-value config.
-		var cfg Config
-		if cfg.AIPostProcess != nil {
-			t.Error("missing file should return all-nil config")
-		}
-		return
-	}
-	var cfg Config
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		t.Fatal(err)
+	if cfg.AIPostProcess != nil {
+		t.Error("missing file should return all-nil config")
 	}
 }
 
 func TestOmitEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	cfg := Config{AIPostProcess: BoolPtr(true)}
-	data, err := yaml.Marshal(cfg)
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	path, _ := Path()
+	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ReadFile: %v", err)
 	}
 	s := string(data)
-	if contains(s, "prompt_mode") {
+	if strings.Contains(s, "prompt_mode") {
 		t.Error("nil fields should be omitted from YAML")
 	}
-	if !contains(s, "ai_postprocess") {
+	if !strings.Contains(s, "ai_postprocess") {
 		t.Error("set fields should appear in YAML")
 	}
 }
@@ -96,17 +111,4 @@ func TestStringPtr(t *testing.T) {
 	if p == nil || *p != "test" {
 		t.Error("StringPtr(test) failed")
 	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && searchString(s, sub)
-}
-
-func searchString(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

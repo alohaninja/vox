@@ -1,7 +1,6 @@
 package flags
 
 import (
-	"os"
 	"testing"
 
 	"vox/internal/userconfig"
@@ -19,17 +18,35 @@ func TestBoolFlagPrecedence(t *testing.T) {
 	}
 
 	// Config file value overrides default.
-	val := true
-	if c.boolFlag("test-key", "VOX_TEST_FLAG_12345", &val, false) != true {
-		t.Error("config file should override default")
+	valTrue := true
+	if c.boolFlag("test-key", "VOX_TEST_FLAG_12345", &valTrue, false) != true {
+		t.Error("config file true should override default false")
+	}
+	valFalse := false
+	if c.boolFlag("test-key", "VOX_TEST_FLAG_12345", &valFalse, true) != false {
+		t.Error("config file false should override default true")
 	}
 
-	// Env var overrides config file.
+	// Env var "false" overrides config file true.
 	t.Setenv("VOX_TEST_FLAG_12345", "false")
-	if c.boolFlag("test-key", "VOX_TEST_FLAG_12345", &val, false) != false {
-		t.Error("env var should override config file")
+	if c.boolFlag("test-key", "VOX_TEST_FLAG_12345", &valTrue, false) != false {
+		t.Error("env var false should override config file true")
+	}
+
+	// Env var "true" overrides config file false.
+	t.Setenv("VOX_TEST_FLAG_12345", "true")
+	if c.boolFlag("test-key", "VOX_TEST_FLAG_12345", &valFalse, false) != true {
+		t.Error("env var true should override config file false")
 	}
 }
+
+// NOTE: Testing the LD-active precedence path (c.ld != nil) requires either
+// a running LD server or a test harness / mock. Since vox is a lightweight
+// CLI tool, we verify the LD path via the BoolVariationDetailCtx contract:
+// - EvalReasonError (flag not found) -> falls through to env/config
+// - Any other reason (flag evaluated) -> returns the LD value
+// The nil-client tests above cover the env > config > default chain.
+// Integration testing with a real SDK key covers the LD path.
 
 func TestAIModelPrecedence(t *testing.T) {
 	c := &Client{userCfg: userconfig.Config{}}
@@ -67,8 +84,8 @@ func TestNilClientGraceful(t *testing.T) {
 }
 
 func TestInitNoSDKKey(t *testing.T) {
-	// Ensure VOX_LD_SDK_KEY is not set.
-	os.Unsetenv("VOX_LD_SDK_KEY")
+	// Ensure VOX_LD_SDK_KEY is not set (t.Setenv restores on cleanup).
+	t.Setenv("VOX_LD_SDK_KEY", "")
 
 	c, err := Init(userconfig.Config{})
 	if err != nil {
