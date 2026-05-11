@@ -1,6 +1,7 @@
 package vocab
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,37 @@ func TestLoadBothTermsAndFile(t *testing.T) {
 	}
 	if !strings.Contains(got, "flagbearer") || !strings.Contains(got, "fdcore") {
 		t.Fatalf("expected both env and file terms, got %q", got)
+	}
+}
+
+func TestLoadDeduplicatesTerms(t *testing.T) {
+	f := writeTemp(t, "flagbearer\ngonfalon\n")
+	got, err := Load("flagbearer,Flagbearer,gonfalon", f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "The following terms may appear: flagbearer, gonfalon."
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestLoadMaxTermsCap(t *testing.T) {
+	// Build a comma-separated string with MaxTerms+50 unique terms.
+	var terms []string
+	for i := 0; i < MaxTerms+50; i++ {
+		terms = append(terms, fmt.Sprintf("term%d", i))
+	}
+	got, err := Load(strings.Join(terms, ","), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Count the terms in the output by splitting on ", ".
+	prefix := "The following terms may appear: "
+	body := strings.TrimSuffix(strings.TrimPrefix(got, prefix), ".")
+	count := len(strings.Split(body, ", "))
+	if count != MaxTerms {
+		t.Fatalf("expected %d terms, got %d", MaxTerms, count)
 	}
 }
 

@@ -7,17 +7,33 @@ import (
 	"strings"
 )
 
+// MaxTerms is the maximum number of vocabulary terms that will be included in
+// the whisper.cpp initial_prompt. The prompt prefix window is ~224 tokens, so
+// large term lists would be silently truncated by the model.
+const MaxTerms = 500
+
 // Load returns a whisper.cpp initial_prompt string from the given comma-separated
 // terms and/or vocab file path. Returns empty string if no vocabulary is configured.
+// Duplicate terms are removed and the total count is capped at MaxTerms.
 func Load(terms, filePath string) (string, error) {
 	var all []string
+	seen := make(map[string]bool)
+
+	addUnique := func(t string) {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			return
+		}
+		key := strings.ToLower(t)
+		if !seen[key] {
+			seen[key] = true
+			all = append(all, t)
+		}
+	}
 
 	if terms != "" {
 		for _, t := range strings.Split(terms, ",") {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				all = append(all, t)
-			}
+			addUnique(t)
 		}
 	}
 
@@ -26,23 +42,33 @@ func Load(terms, filePath string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		all = append(all, fileTerms...)
+		for _, t := range fileTerms {
+			addUnique(t)
+		}
 	}
 
 	if len(all) == 0 {
 		return "", nil
 	}
 
+	if len(all) > MaxTerms {
+		all = all[:MaxTerms]
+	}
+
 	return "The following terms may appear: " + strings.Join(all, ", ") + ".", nil
 }
 
 func readFile(path string) ([]string, error) {
-	if strings.HasPrefix(path, "~/") {
+	if path == "~" || strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return nil, fmt.Errorf("expand home directory: %w", err)
 		}
-		path = home + path[1:]
+		if path == "~" {
+			path = home
+		} else {
+			path = home + path[1:]
+		}
 	}
 
 	f, err := os.Open(path)
