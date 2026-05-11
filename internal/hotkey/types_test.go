@@ -3,23 +3,31 @@ package hotkey
 import "testing"
 
 func TestFlagConstants(t *testing.T) {
-	// Verify flag constants are non-zero and distinct.
-	flags := map[string]uint64{
-		"FlagShift":   FlagShift,
-		"FlagControl": FlagControl,
-		"FlagOption":  FlagOption,
-		"FlagCommand": FlagCommand,
-		"FlagFn":      FlagFn,
+	// Pin exact macOS CGEvent modifier bitmask values.
+	tests := []struct {
+		name string
+		got  uint64
+		want uint64
+	}{
+		{"FlagShift", FlagShift, 0x20000},
+		{"FlagControl", FlagControl, 0x40000},
+		{"FlagOption", FlagOption, 0x80000},
+		{"FlagCommand", FlagCommand, 0x100000},
+		{"FlagFn", FlagFn, 0x800000},
 	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("%s = 0x%x, want 0x%x", tt.name, tt.got, tt.want)
+		}
+	}
+
+	// Also verify all flags are distinct.
 	seen := make(map[uint64]string)
-	for name, val := range flags {
-		if val == 0 {
-			t.Errorf("%s should not be zero", name)
+	for _, tt := range tests {
+		if prev, ok := seen[tt.got]; ok {
+			t.Errorf("%s and %s have the same value: 0x%x", tt.name, prev, tt.got)
 		}
-		if prev, ok := seen[val]; ok {
-			t.Errorf("%s and %s have the same value: %d", name, prev, val)
-		}
-		seen[val] = name
+		seen[tt.got] = tt.name
 	}
 }
 

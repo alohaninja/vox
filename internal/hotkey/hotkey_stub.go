@@ -23,7 +23,11 @@ func NewListener(_ []Trigger) *Listener {
 func CheckAccessibility() bool { return true }
 
 // Start returns an error on non-darwin platforms.
+// It closes the keydown/keyup channels so any goroutine blocked on them
+// unblocks cleanly instead of leaking.
 func (l *Listener) Start() error {
+	close(l.keydown)
+	close(l.keyup)
 	return errors.New("hotkey listener not supported on this platform (macOS only)")
 }
 
