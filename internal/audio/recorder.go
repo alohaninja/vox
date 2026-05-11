@@ -56,7 +56,7 @@ type Recorder struct {
 // process starts is definitionally orphaned — no running instance owns it.
 // This should be called once at startup.
 func CleanupOrphanedTempFiles() (removed int) {
-	for _, pattern := range []string{tempFilePattern, soundFilePattern} {
+	for _, pattern := range []string{tempFilePattern, soundFilePattern, streamTempPattern} {
 		matches, _ := filepath.Glob(filepath.Join(os.TempDir(), pattern))
 		for _, m := range matches {
 			if os.Remove(m) == nil {
