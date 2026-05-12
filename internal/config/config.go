@@ -10,19 +10,43 @@ import (
 
 // Config holds runtime configuration for the vox dictation tool.
 type Config struct {
-	WhisperURL string
-	Language   string
-	HoldToTalk bool
-	Verbose    bool
-	Hotkey     string
-	Triggers   []hotkey.Trigger
-	VocabTerms string // Comma-separated domain terms (VOX_VOCAB_TERMS)
-	VocabFile  string // Path to vocab file, one term per line (VOX_VOCAB_FILE)
+	WhisperURL    string
+	Language      string
+	HoldToTalk    bool
+	SoundsEnabled bool
+	AutoPaste     bool
+	Verbose       bool
+	Hotkey        string
+	Triggers      []hotkey.Trigger
+	VocabTerms    string // Comma-separated domain terms (VOX_VOCAB_TERMS)
+	VocabFile     string // Path to vocab file, one term per line (VOX_VOCAB_FILE)
 }
 
-// Load reads configuration from environment variables with sensible defaults.
+// Load reads configuration from environment variables and the user
+// preferences file, with sensible defaults.
+//
+// Precedence per setting (highest first):
+//  1. environment variable (power-user override; not persisted)
+//  2. preferences.json (set via the menubar)
+//  3. compiled-in default
+//
+// Boolean settings that don't have an env var (Sounds, AutoPaste)
+// just use prefs > default.
+//
+// A malformed preferences file is ignored (we fall back to defaults rather
+// than refusing to start). A malformed VOX_HOTKEY is fatal.
 func Load() Config {
-	hotkeyStr := envOrDefault("VOX_HOTKEY", "option+space")
+	prefs, _ := LoadPrefs()
+
+	hotkeyStr := os.Getenv("VOX_HOTKEY")
+	if hotkeyStr == "" && prefs.Hotkey != "" {
+		if _, perr := ParseHotkeys(prefs.Hotkey); perr == nil {
+			hotkeyStr = prefs.Hotkey
+		}
+	}
+	if hotkeyStr == "" {
+		hotkeyStr = "option+space"
+	}
 	triggers, err := ParseHotkeys(hotkeyStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: invalid VOX_HOTKEY=%q: %v\n", hotkeyStr, err)
@@ -30,15 +54,22 @@ func Load() Config {
 		os.Exit(1)
 	}
 
+	holdToTalk := BoolOr(prefs.HoldToTalk, true)
+	if v := os.Getenv("VOX_HOLD_TO_TALK"); v != "" {
+		holdToTalk = parseBool(v, true)
+	}
+
 	return Config{
-		WhisperURL: envOrDefault("WHISPER_URL", "http://127.0.0.1:2022"),
-		Language:   os.Getenv("VOX_LANGUAGE"),
-		HoldToTalk: parseBool(os.Getenv("VOX_HOLD_TO_TALK"), true),
-		Verbose:    parseBool(os.Getenv("VOX_VERBOSE"), false),
-		Hotkey:     hotkeyStr,
-		Triggers:   triggers,
-		VocabTerms: os.Getenv("VOX_VOCAB_TERMS"),
-		VocabFile:  os.Getenv("VOX_VOCAB_FILE"),
+		WhisperURL:    envOrDefault("WHISPER_URL", "http://127.0.0.1:2022"),
+		Language:      os.Getenv("VOX_LANGUAGE"),
+		HoldToTalk:    holdToTalk,
+		SoundsEnabled: BoolOr(prefs.SoundsEnabled, true),
+		AutoPaste:     BoolOr(prefs.AutoPaste, true),
+		Verbose:       parseBool(os.Getenv("VOX_VERBOSE"), false),
+		Hotkey:        hotkeyStr,
+		Triggers:      triggers,
+		VocabTerms:    os.Getenv("VOX_VOCAB_TERMS"),
+		VocabFile:     os.Getenv("VOX_VOCAB_FILE"),
 	}
 }
 

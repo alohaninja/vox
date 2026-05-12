@@ -7,8 +7,12 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"golang.design/x/mainthread"
@@ -19,6 +23,7 @@ import (
 	"vox/internal/inject"
 	"vox/internal/pipeline"
 	"vox/internal/transcribe"
+	"vox/internal/ui"
 	"vox/internal/vocab"
 )
 
@@ -33,6 +38,26 @@ const (
 	// Version is the current release identifier shown by "vox version".
 	version = "vox 2.0.0-dev (Moonshots XXIII)"
 )
+
+// runtimeSettings holds the in-process state for the toggles the user can
+// flip from the menubar. atomic.Bool means any goroutine can read or write
+// without locking. Persistence is done separately via config.SavePref.
+type runtimeSettings struct {
+	Paused        atomic.Bool
+	HoldToTalk    atomic.Bool
+	SoundsEnabled atomic.Bool
+	AutoPaste     atomic.Bool
+}
+
+var settings runtimeSettings
+
+// processMu guards a "stop-and-process" cycle. handleStopAndProcess holds
+// it from before its first recorder.Stop() through the end of injection;
+// settingsWatcher's pause handler tries to acquire it before stopping the
+// recorder. If processMu is already held, a stop-and-process is in flight
+// and pause should leave it alone — the audio was captured before the
+// pause click, so the user expects that one final transcription to land.
+var processMu sync.Mutex
 
 func main() {
 	mainthread.Init(run)
@@ -134,20 +159,39 @@ func run() {
 	}
 
 	// Build hotkey labels for display.
-	var labels []string
-	for _, t := range cfg.Triggers {
-		labels = append(labels, t.Label)
-	}
-	hotkeyLabel := strings.Join(labels, " or ")
+	hotkeyLabel := triggerLabel(cfg.Triggers)
 
-	// Create hotkey listener.
+	// Seed runtime settings from the loaded config. The UI mirrors these
+	// initial values; subsequent menu clicks update both the atomic.Bools
+	// and persist to disk.
+	settings.HoldToTalk.Store(cfg.HoldToTalk)
+	settings.SoundsEnabled.Store(cfg.SoundsEnabled)
+	settings.AutoPaste.Store(cfg.AutoPaste)
+
+	// Initialize the menubar UI on the main goroutine. Must happen before the
+	// hotkey listener registers on the main run loop, because uiInit creates
+	// [NSApplication sharedApplication] and CGEventTap relies on its run loop.
+	ui.Init(hotkeyLabel)
+	ui.SetState(ui.StateIdle)
+	ui.SetHotkeyPresets(hotkeyPresets, cfg.Hotkey)
+	ui.SetMode(cfg.HoldToTalk)
+	ui.SetSoundsEnabled(cfg.SoundsEnabled)
+	ui.SetAutoPaste(cfg.AutoPaste)
+
+	// Create hotkey listener and register the CGEventTap source on the main
+	// run loop. Non-blocking: events arrive once we call ui.Run() below.
 	listener := hotkey.NewListener(cfg.Triggers)
+	if err := listener.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	if cfg.HoldToTalk {
-		fmt.Printf("✅ Vox ready — Hold %s to dictate.\n", hotkeyLabel)
+		fmt.Printf("✅ Vox is running in your menubar — Hold %s to dictate.\n", hotkeyLabel)
 	} else {
-		fmt.Printf("✅ Vox ready — Press %s to start/stop dictation.\n", hotkeyLabel)
+		fmt.Printf("✅ Vox is running in your menubar — Press %s to start/stop dictation.\n", hotkeyLabel)
 	}
+	fmt.Println("   Quit from the menubar icon or send SIGINT/SIGTERM.")
 	fmt.Println()
 
 	// Build the processing pipeline.
@@ -157,21 +201,161 @@ func run() {
 		injectStage(),
 	)
 
-	// Signal handling.
+	// Signal handling — combined with the menubar Quit menu item via a
+	// single shutdown watcher.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Run event loop on a separate goroutine (listener.Start blocks the main thread).
-	if cfg.HoldToTalk {
-		go runHoldToTalk(ctx, cfg, logger, listener, recorder, pipe, sigCh)
-	} else {
-		go runToggle(ctx, cfg, logger, listener, recorder, pipe, sigCh)
-	}
+	go shutdownWatcher(logger, recorder, sigCh)
+	go showLogWatcher(logger)
+	go hotkeyChangeWatcher(logger, listener)
+	go settingsWatcher(logger, recorder)
+	go runEventLoop(ctx, cfg, logger, listener, recorder, pipe)
 
-	// Start CGEventTap on the main thread (blocks forever).
-	if err := listener.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Run NSApp's main loop on the main goroutine. Returns when the user
+	// chooses Quit Vox in the menubar or shutdownWatcher calls ui.Quit().
+	ui.Run()
+}
+
+// shutdownWatcher waits for either an OS signal or a menubar Quit click,
+// then drains the recorder and tells NSApp to terminate.
+func shutdownWatcher(logger *slog.Logger, recorder *audio.Recorder, sigCh <-chan os.Signal) {
+	select {
+	case <-sigCh:
+	case <-ui.OnQuit():
+	}
+	cleanup(logger, recorder)
+	if p := os.Getenv("VOX_LOG_PATH"); p != "" {
+		_ = os.Remove(p)
+	}
+	if p := os.Getenv("VOX_PID_PATH"); p != "" {
+		_ = os.Remove(p)
+	}
+	ui.Quit()
+}
+
+// hotkeyPresets is the curated list shown in the "Change Hotkey" submenu.
+// Order matters — it's the order shown to the user. The Spec strings are
+// what gets persisted to preferences.json and parsed by config.ParseHotkeys,
+// so they must round-trip through that parser cleanly.
+var hotkeyPresets = []ui.HotkeyPreset{
+	{Spec: "option+space", Label: "Option + Space"},
+	{Spec: "fn", Label: "Fn / Globe"},
+	{Spec: "cmd+shift", Label: "Cmd + Shift (hold both)"},
+	{Spec: "ctrl+option", Label: "Ctrl + Option (hold both)"},
+	{Spec: "option+v", Label: "Option + V"},
+	{Spec: "ctrl+shift+space", Label: "Ctrl + Shift + Space"},
+}
+
+func triggerLabel(triggers []hotkey.Trigger) string {
+	var labels []string
+	for _, t := range triggers {
+		labels = append(labels, t.Label)
+	}
+	return strings.Join(labels, " or ")
+}
+
+// hotkeyChangeWatcher listens for hotkey picks from the menubar and applies
+// them live to the running listener. The new value is also persisted to
+// preferences.json so it survives restarts.
+//
+// VOX_HOTKEY env var is intentionally NOT updated — the env var is a
+// per-process override; the menu is the persistent source of truth.
+func hotkeyChangeWatcher(logger *slog.Logger, listener *hotkey.Listener) {
+	for spec := range ui.OnHotkeyChange() {
+		triggers, err := config.ParseHotkeys(spec)
+		if err != nil {
+			logger.Warn("invalid hotkey spec from menu", "spec", spec, "error", err)
+			continue
+		}
+		listener.SetTriggers(triggers)
+		label := triggerLabel(triggers)
+		ui.SetHotkeyLabel(label)
+		ui.SetHotkeyCheckmark(spec)
+		if err := config.SavePref(func(p *config.Prefs) { p.Hotkey = spec }); err != nil {
+			logger.Warn("save prefs", "error", err)
+		}
+		fmt.Printf("Hotkey changed to %s\n", label)
+	}
+}
+
+// settingsWatcher fans the menubar toggle events out to the runtime settings
+// store and persists each change to preferences.json. Pause is special: if
+// the user pauses mid-recording, we discard the in-flight audio so the menu
+// click feels instantaneous. Pause itself is *not* persisted: a fresh launch
+// should always be active so users don't get stuck in a silently-paused vox
+// after a reboot.
+func settingsWatcher(logger *slog.Logger, recorder *audio.Recorder) {
+	save := func(name string, mutate func(*config.Prefs)) {
+		if err := config.SavePref(mutate); err != nil {
+			logger.Warn("save prefs", "field", name, "error", err)
+		}
+	}
+	for {
+		select {
+		case paused := <-ui.OnPauseToggle():
+			settings.Paused.Store(paused)
+			ui.SetPaused(paused)
+			if paused && recorder.IsRecording() {
+				// Only abort the in-flight recording if no stop-and-process
+				// cycle has already claimed it. If processMu is held, the
+				// keyup that started the cycle happened before this pause,
+				// so let that transcription finish.
+				if processMu.TryLock() {
+					if _, err := recorder.Stop(); err != nil && !errors.Is(err, audio.ErrNotRecording) {
+						logger.Warn("stop on pause", "error", err)
+					}
+					ui.SetState(ui.StateIdle)
+					processMu.Unlock()
+				}
+			}
+			fmt.Printf("Vox %s\n", boolWord(paused, "paused", "resumed"))
+		case hold := <-ui.OnModeChange():
+			settings.HoldToTalk.Store(hold)
+			ui.SetMode(hold)
+			save("hold_to_talk", func(p *config.Prefs) { p.HoldToTalk = config.BoolPtr(hold) })
+			fmt.Printf("Mode: %s\n", boolWord(hold, "hold to talk", "toggle"))
+		case on := <-ui.OnSoundsToggle():
+			settings.SoundsEnabled.Store(on)
+			ui.SetSoundsEnabled(on)
+			save("sounds_enabled", func(p *config.Prefs) { p.SoundsEnabled = config.BoolPtr(on) })
+		case on := <-ui.OnAutoPasteToggle():
+			settings.AutoPaste.Store(on)
+			ui.SetAutoPaste(on)
+			save("auto_paste", func(p *config.Prefs) { p.AutoPaste = config.BoolPtr(on) })
+		}
+	}
+}
+
+func boolWord(b bool, ifTrue, ifFalse string) string {
+	if b {
+		return ifTrue
+	}
+	return ifFalse
+}
+
+// showLogWatcher opens VOX_LOG_PATH (or a sensible default) in Console.app
+// whenever the user picks "Show Log…" from the menubar.
+func showLogWatcher(logger *slog.Logger) {
+	for range ui.OnShowLog() {
+		path := os.Getenv("VOX_LOG_PATH")
+		if path == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				logger.Warn("show log: cannot resolve home directory", "error", err)
+				continue
+			}
+			path = filepath.Join(home, "Library", "Logs", "vox.log")
+		}
+		if _, err := os.Stat(path); err != nil {
+			logger.Warn("show log: file not found", "path", path)
+			continue
+		}
+		// Open in Console.app for syntax highlighting and tail-following.
+		if err := exec.Command("open", "-a", "Console", path).Start(); err != nil {
+			// Fall back to whatever app is configured for .log files.
+			_ = exec.Command("open", path).Start()
+		}
 	}
 }
 
@@ -197,71 +381,75 @@ func runSetup() {
 	fmt.Println("Done. Run: make start")
 }
 
-func runHoldToTalk(
+// runEventLoop is the single hotkey handler. The hold-vs-toggle behavior is
+// chosen per event based on settings.HoldToTalk so the user can swap modes
+// from the menu without restarting the loop.
+//
+// All hotkey events are dropped when settings.Paused is true.
+func runEventLoop(
 	ctx context.Context,
 	cfg config.Config,
 	logger *slog.Logger,
 	listener *hotkey.Listener,
 	recorder *audio.Recorder,
 	pipe *pipeline.Pipeline,
-	sigCh <-chan os.Signal,
 ) {
 	for {
 		select {
-		case <-sigCh:
-			cleanup(logger, recorder)
-			os.Exit(0)
+		case <-ctx.Done():
+			return
 		case <-listener.Keydown():
-			if cfg.Verbose {
-				logger.Debug("hotkey pressed, starting recording")
-			}
-			audio.PlayStartSound()
-			fmt.Println("Recording...")
-			if err := recorder.Start(); err != nil {
-				fmt.Printf("Error starting recording: %v\n", err)
+			if settings.Paused.Load() {
 				continue
 			}
+			if settings.HoldToTalk.Load() {
+				startRecording(logger, recorder, cfg.Verbose, "Recording...")
+			} else {
+				if recorder.IsRecording() {
+					playStop()
+					handleStopAndProcess(ctx, cfg, logger, recorder, pipe)
+				} else {
+					startRecording(logger, recorder, cfg.Verbose, "Recording... (press again to stop)")
+				}
+			}
 		case <-listener.Keyup():
+			if settings.Paused.Load() {
+				continue
+			}
+			if !settings.HoldToTalk.Load() {
+				continue
+			}
 			if !recorder.IsRecording() {
 				continue
 			}
-			audio.PlayStopSound()
+			playStop()
 			handleStopAndProcess(ctx, cfg, logger, recorder, pipe)
 		}
 	}
 }
 
-func runToggle(
-	ctx context.Context,
-	cfg config.Config,
-	logger *slog.Logger,
-	listener *hotkey.Listener,
-	recorder *audio.Recorder,
-	pipe *pipeline.Pipeline,
-	sigCh <-chan os.Signal,
-) {
-	for {
-		select {
-		case <-sigCh:
-			cleanup(logger, recorder)
-			os.Exit(0)
-		case <-listener.Keydown():
-			if recorder.IsRecording() {
-				audio.PlayStopSound()
-				handleStopAndProcess(ctx, cfg, logger, recorder, pipe)
-			} else {
-				if cfg.Verbose {
-					logger.Debug("hotkey pressed, starting recording (toggle mode)")
-				}
-				audio.PlayStartSound()
-				fmt.Println("Recording... (press again to stop)")
-				if err := recorder.Start(); err != nil {
-					fmt.Printf("Error starting recording: %v\n", err)
-				}
-			}
-		case <-listener.Keyup():
-			// In toggle mode, keyup is ignored.
-		}
+func startRecording(logger *slog.Logger, recorder *audio.Recorder, verbose bool, banner string) {
+	if verbose {
+		logger.Debug("hotkey pressed, starting recording")
+	}
+	ui.SetState(ui.StateRecording)
+	playStart()
+	fmt.Println(banner)
+	if err := recorder.Start(); err != nil {
+		fmt.Printf("Error starting recording: %v\n", err)
+		ui.SetState(ui.StateIdle)
+	}
+}
+
+func playStart() {
+	if settings.SoundsEnabled.Load() {
+		audio.PlayStartSound()
+	}
+}
+
+func playStop() {
+	if settings.SoundsEnabled.Load() {
+		audio.PlayStopSound()
 	}
 }
 
@@ -272,12 +460,28 @@ func handleStopAndProcess(
 	recorder *audio.Recorder,
 	pipe *pipeline.Pipeline,
 ) {
+	// Claim the recorder for the entire stop-and-process cycle so a pause
+	// click can't steal the WAV out from under us between SetState and Stop.
+	processMu.Lock()
+	defer processMu.Unlock()
+
+	ui.SetState(ui.StateTranscribing)
+	defer ui.SetState(ui.StateIdle)
+
 	fmt.Println("Transcribing...")
 
 	wavData, err := recorder.Stop()
 	if err != nil {
 		if errors.Is(err, audio.ErrTooShort) {
 			fmt.Println("Too short, skipping.")
+			fmt.Println("Ready!")
+			return
+		}
+		if errors.Is(err, audio.ErrNotRecording) {
+			// Belt-and-suspenders: the mutex should make this unreachable,
+			// but if shutdown or some future caller stops the recorder
+			// concurrently, we treat it as "nothing to transcribe" rather
+			// than logging a misleading error.
 			fmt.Println("Ready!")
 			return
 		}
@@ -328,17 +532,21 @@ func filterBlankStage() pipeline.Stage {
 	}
 }
 
-// injectStage returns a pipeline stage that pastes the output text into the
-// focused application via the system clipboard. Injection errors are logged
-// but not propagated — the transcription was still successful.
+// injectStage returns a pipeline stage that either pastes the output text
+// into the focused application (Auto-paste on, the default) or just copies
+// it to the clipboard (Auto-paste off). Either way, the menubar updates
+// its "Last:" row so the user can confirm what was captured.
 func injectStage() pipeline.Stage {
 	return func(_ context.Context, r *pipeline.Result) error {
-		fmt.Printf(">>> %s\n", r.OutputText)
-		if err := inject.TypeText(r.OutputText); err != nil {
-			if !errors.Is(err, inject.ErrNotSupported) {
+		ui.SetLastText(r.OutputText)
+		if settings.AutoPaste.Load() {
+			if err := inject.TypeText(r.OutputText); err != nil && !errors.Is(err, inject.ErrNotSupported) {
 				fmt.Printf("Error pasting text: %v\n", err)
 			}
-			// On unsupported platforms the text was already printed above.
+			return nil
+		}
+		if err := inject.CopyToClipboard(r.OutputText); err != nil && !errors.Is(err, inject.ErrNotSupported) {
+			fmt.Printf("Error copying to clipboard: %v\n", err)
 		}
 		return nil
 	}

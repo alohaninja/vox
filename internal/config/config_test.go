@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("VOX_HOLD_TO_TALK", "")
 	t.Setenv("VOX_VERBOSE", "")
 	t.Setenv("VOX_HOTKEY", "")
+	t.Setenv("VOX_PREFS_PATH", filepath.Join(t.TempDir(), "no-such-prefs.json"))
 
 	cfg := Load()
 

@@ -53,6 +53,9 @@ int checkAccessibility(int prompt) {
     return trusted ? 1 : 0;
 }
 
+// startEventTap creates the CGEventTap and registers its run-loop source on
+// the *main* run loop, then returns immediately. The caller is responsible
+// for running the main run loop (typically via [NSApp run] in the UI layer).
 int startEventTap(void) {
     CGEventMask mask = CGEventMaskBit(kCGEventFlagsChanged) |
                        CGEventMaskBit(kCGEventKeyDown) |
@@ -72,9 +75,12 @@ int startEventTap(void) {
     CFRunLoopSourceRef source = CFMachPortCreateRunLoopSource(
         kCFAllocatorDefault, _tap, 0
     );
-    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+    // Use the main run loop so the source is alive whichever thread Start()
+    // happens to be invoked from. NSApp's main loop will dispatch events.
+    CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+    // CFRunLoopAddSource retains; balance the Create rule's implicit retain.
+    CFRelease(source);
     CGEventTapEnable(_tap, true);
-    CFRunLoopRun();
 
     return 0;
 }
