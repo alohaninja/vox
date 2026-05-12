@@ -31,7 +31,12 @@ var (
 )
 
 // Listener monitors for global hotkey triggers via macOS CGEventTap.
+//
+// triggers/active/matchedTrigger are read by the CGEventTap callback on
+// the main thread and written by SetTriggers from any goroutine, so the
+// mutex is required, not optional.
 type Listener struct {
+	mu             sync.Mutex
 	triggers       []Trigger
 	active         bool
 	matchedTrigger int
@@ -49,14 +54,38 @@ func NewListener(triggers []Trigger) *Listener {
 	}
 }
 
+// SetTriggers atomically replaces the trigger list. If a hotkey was active
+// (e.g. the user was holding the old combo when they changed it), a synthetic
+// keyup is published so any in-progress recording can shut down cleanly.
+func (l *Listener) SetTriggers(triggers []Trigger) {
+	l.mu.Lock()
+	wasActive := l.active
+	l.triggers = triggers
+	l.active = false
+	l.matchedTrigger = -1
+	l.mu.Unlock()
+	if wasActive {
+		select {
+		case l.keyup <- struct{}{}:
+		default:
+		}
+	}
+}
+
 // CheckAccessibility returns true if the process has Accessibility permission.
 func CheckAccessibility() bool {
 	// Request macOS to show the Accessibility permission prompt if needed.
 	return C.checkAccessibility(1) == 1
 }
 
-// Start begins listening for hotkey events. This function blocks forever
-// (runs a CFRunLoop). It must be called from the main thread on macOS.
+// Start registers the CGEventTap on the main run loop and returns
+// immediately. The caller is responsible for running the main run loop
+// afterward (the ui package does this via [NSApp run]).
+//
+// Start may be called from any goroutine, but the run loop it registers on
+// must be the main thread's run loop, so callers must have already pinned a
+// goroutine to the main OS thread (we use golang.design/x/mainthread for
+// this in cmd/vox/main.go).
 func (l *Listener) Start() error {
 	mu.Lock()
 	global = l
@@ -98,6 +127,9 @@ func goEventCallback(eventType uint32, flags uint64, keycode int64) int32 {
 }
 
 func (l *Listener) handleFlagsChanged(flags uint64) int32 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	consume := int32(0)
 	matched := false
 
@@ -146,6 +178,9 @@ func (l *Listener) handleFlagsChanged(flags uint64) int32 {
 }
 
 func (l *Listener) handleKeyDown(flags uint64, keycode int64) int32 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	// Check modifier+key triggers.
 	for i, t := range l.triggers {
 		if t.Key < 0 {
@@ -179,6 +214,9 @@ func (l *Listener) handleKeyDown(flags uint64, keycode int64) int32 {
 }
 
 func (l *Listener) handleKeyUp(keycode int64) int32 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if !l.active || l.matchedTrigger < 0 {
 		return 0
 	}

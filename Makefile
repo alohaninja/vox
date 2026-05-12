@@ -1,9 +1,22 @@
-.PHONY: build test test-short test-race lint run setup start clean install deps fmt ci check-fmt
+.PHONY: build app test test-short test-race lint run setup start stop status clean install deps fmt ci check-fmt
 
 export CGO_LDFLAGS := -Wl,-no_warn_duplicate_libraries
 
+# Bundle identity. Stable so macOS TCC keeps perms across rebuilds.
+APP_BUNDLE    := bin/Vox.app
+APP_BUNDLE_ID := dev.vox.menubar
+
 build:
 	go build -o bin/vox ./cmd/vox
+
+# app wraps bin/vox in a real .app bundle so TCC keys perms on bundle ID.
+app: build
+	@rm -rf $(APP_BUNDLE)
+	@mkdir -p $(APP_BUNDLE)/Contents/MacOS
+	@cp packaging/Info.plist $(APP_BUNDLE)/Contents/Info.plist
+	@cp bin/vox $(APP_BUNDLE)/Contents/MacOS/vox
+	@codesign --sign - --force --identifier $(APP_BUNDLE_ID) $(APP_BUNDLE) >/dev/null
+	@echo "Built $(APP_BUNDLE) ($(APP_BUNDLE_ID))"
 
 test:
 	go test -v ./...
@@ -21,61 +34,81 @@ lint:
 run:
 	go run ./cmd/vox
 
+# setup installs the system dependencies (sox/ffmpeg, whisper-cpp, model
+# file). Idempotent and quiet when everything is already in place, so it's
+# safe to depend on from `start`. Permissions (Accessibility, Microphone)
+# are intentionally handled by Vox.app's first launch, not here — that way
+# TCC only prompts once, for the bundle identity, not twice (bare binary + bundle).
 setup:
 	@set -eu; \
 	if ! command -v brew >/dev/null 2>&1; then \
 		echo "Error: Homebrew is required: https://brew.sh"; \
 		exit 1; \
 	fi; \
-	if command -v rec >/dev/null 2>&1 || command -v ffmpeg >/dev/null 2>&1; then \
-		echo "Audio recorder already installed (sox or ffmpeg found)"; \
-	else \
-		echo "Installing sox..."; \
+	if ! command -v rec >/dev/null 2>&1 && ! command -v ffmpeg >/dev/null 2>&1; then \
+		echo "📦 Installing sox..."; \
 		brew install sox; \
 	fi; \
-	if command -v whisper-server >/dev/null 2>&1; then \
-		echo "whisper-cpp already installed"; \
-	else \
-		echo "Installing whisper-cpp..."; \
+	if ! command -v whisper-server >/dev/null 2>&1; then \
+		echo "📦 Installing whisper-cpp..."; \
 		brew install whisper-cpp; \
 	fi; \
 	MODEL_DIR="$${WHISPER_MODEL_DIR:-$$HOME/.local/share/whisper-cpp}"; \
 	MODEL_PATH="$${WHISPER_MODEL:-$$MODEL_DIR/ggml-base.en.bin}"; \
-	mkdir -p "$$MODEL_DIR"; \
-	if [ -f "$$MODEL_PATH" ]; then \
-		echo "Whisper model already exists at $$MODEL_PATH"; \
-	else \
-		echo "Downloading whisper model to $$MODEL_PATH..."; \
-		curl -L -o "$$MODEL_PATH" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"; \
-	fi; \
-	echo ""; \
-	echo "Building vox..."; \
-	$(MAKE) build; \
-	echo ""; \
-	bin/vox setup
-
-start:
-	@set -eu; \
-	MODEL_PATH="$${WHISPER_MODEL:-$$HOME/.local/share/whisper-cpp/ggml-base.en.bin}"; \
-	LOG_PATH="$${WHISPER_LOG:-logs/whisper.log}"; \
-	if ! command -v whisper-server >/dev/null 2>&1; then \
-		echo "Error: whisper-server not found. Install whisper-cpp."; \
-		exit 1; \
-	fi; \
 	if [ ! -f "$$MODEL_PATH" ]; then \
-		echo "Error: Whisper model not found at $$MODEL_PATH"; \
-		exit 1; \
+		echo "⬇️  Downloading whisper model (~150MB) to $$MODEL_PATH..."; \
+		mkdir -p "$$MODEL_DIR"; \
+		curl --fail --proto '=https' --tlsv1.2 -L -o "$$MODEL_PATH" \
+			"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"; \
+		echo "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002  $$MODEL_PATH" \
+			| shasum -a 256 -c - >/dev/null || { \
+				echo "❌ Model checksum mismatch — deleting $$MODEL_PATH"; \
+				rm -f "$$MODEL_PATH"; \
+				exit 1; \
+			}; \
+	fi
+
+# start is the one-command entry point: ensures system deps (`setup`), builds
+# the .app bundle (`app`), and launches whisper-server + Vox detached so the
+# terminal can close. Quit via the menubar (Vox → Quit Vox) or `make stop`.
+start: setup app
+	@set -eu; \
+	MODEL="$${WHISPER_MODEL:-$$HOME/.local/share/whisper-cpp/ggml-base.en.bin}"; \
+	mkdir -p logs; \
+	command -v whisper-server >/dev/null || { echo "whisper-server not found. Run: make setup"; exit 1; }; \
+	[ -f "$$MODEL" ] || { echo "Whisper model not found: $$MODEL"; exit 1; }; \
+	if [ -f logs/vox.pid ] && kill -0 "$$(cat logs/vox.pid)" 2>/dev/null; then \
+		echo "Vox already running (pid $$(cat logs/vox.pid)). Run: make stop"; exit 1; \
 	fi; \
-	mkdir -p "$$(dirname "$$LOG_PATH")"; \
-	whisper-server --host 127.0.0.1 --port 2022 --model "$$MODEL_PATH" >"$$LOG_PATH" 2>&1 & \
-	WHISPER_PID=$$!; \
-	cleanup() { \
-		kill "$$WHISPER_PID" 2>/dev/null || true; \
-		wait "$$WHISPER_PID" 2>/dev/null || true; \
-	}; \
-	trap cleanup EXIT INT TERM; \
-	echo "✅ Whisper http://127.0.0.1:2022 (log: $$LOG_PATH)"; \
-	go run ./cmd/vox
+	if ! { [ -f logs/whisper.pid ] && kill -0 "$$(cat logs/whisper.pid)" 2>/dev/null; }; then \
+		nohup whisper-server --host 127.0.0.1 --port 2022 --model "$$MODEL" >logs/whisper.log 2>&1 & \
+		echo $$! > logs/whisper.pid; \
+		echo "🚀 whisper-server (pid $$!)"; \
+	fi; \
+	VOX_LOG_PATH="$$(pwd)/logs/vox.log" \
+	VOX_PID_PATH="$$(pwd)/logs/vox.pid" \
+		nohup "$(APP_BUNDLE)/Contents/MacOS/vox" >logs/vox.log 2>&1 & \
+	echo $$! > logs/vox.pid; \
+	echo "✅ Vox running (pid $$!) — look for it in the menubar (logs/vox.log)"
+
+stop:
+	@for name in vox whisper; do \
+		pid="$$(cat logs/$$name.pid 2>/dev/null)" || true; \
+		if [ -n "$$pid" ] && ps -p "$$pid" -o comm= 2>/dev/null | grep -q "$$name" && kill "$$pid" 2>/dev/null; then \
+			echo "stopped $$name (pid $$pid)"; \
+		fi; \
+		rm -f logs/$$name.pid logs/$$name.log; \
+	done
+
+status:
+	@for name in vox whisper; do \
+		pid="$$(cat logs/$$name.pid 2>/dev/null)" || true; \
+		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+			echo "$$name: running (pid $$pid)"; \
+		else \
+			echo "$$name: not running"; \
+		fi; \
+	done
 
 clean:
 	rm -rf bin/

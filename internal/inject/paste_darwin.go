@@ -82,6 +82,16 @@ func ClearClipboard() error {
 	return copyToClipboard("")
 }
 
+// CopyToClipboard writes text to the system clipboard without simulating a
+// paste keystroke. Used by the "auto-paste off" mode: the user gets the
+// transcription on their clipboard and pastes wherever they want.
+func CopyToClipboard(text string) error {
+	if text == "" {
+		return nil
+	}
+	return copyToClipboard(text)
+}
+
 func copyToClipboard(text string) error {
 	cmd := exec.Command("pbcopy")
 	cmd.Stdin = strings.NewReader(text)
