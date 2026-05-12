@@ -1,4 +1,6 @@
 #import <Cocoa/Cocoa.h>
+#include <stdlib.h>
+#include <string.h>
 #include "_cgo_export.h"
 
 // MARK: - Globals (all main-thread-only)
@@ -172,10 +174,10 @@ void uiInit(const char *hotkeyLabel) {
         [statusMenu addItem:hotkeyPresetsItem];
 
         // --- Mode submenu (radio: Hold to Talk / Toggle) ---
-        NSMenuItem *modeItem = [[NSMenuItem alloc] initWithTitle:@"Mode"
-                                                          action:nil
-                                                   keyEquivalent:@""];
-        NSMenu *modeMenu = [[NSMenu alloc] initWithTitle:@"Mode"];
+        NSMenuItem *modeItem = [[[NSMenuItem alloc] initWithTitle:@"Mode"
+                                                           action:nil
+                                                    keyEquivalent:@""] autorelease];
+        NSMenu *modeMenu = [[[NSMenu alloc] initWithTitle:@"Mode"] autorelease];
         modeHoldItem = [[NSMenuItem alloc] initWithTitle:@"Hold to Talk"
                                                   action:@selector(modeHoldClicked:)
                                            keyEquivalent:@""];
@@ -206,17 +208,17 @@ void uiInit(const char *hotkeyLabel) {
 
         [statusMenu addItem:[NSMenuItem separatorItem]];
 
-        NSMenuItem *showLogItem = [[NSMenuItem alloc] initWithTitle:@"Show Log…"
-                                                              action:@selector(showLogClicked:)
-                                                       keyEquivalent:@""];
+        NSMenuItem *showLogItem = [[[NSMenuItem alloc] initWithTitle:@"Show Log…"
+                                                               action:@selector(showLogClicked:)
+                                                        keyEquivalent:@""] autorelease];
         [showLogItem setTarget:appDelegate];
         [statusMenu addItem:showLogItem];
 
         [statusMenu addItem:[NSMenuItem separatorItem]];
 
-        NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit Vox"
-                                                          action:@selector(quitClicked:)
-                                                   keyEquivalent:@"q"];
+        NSMenuItem *quitItem = [[[NSMenuItem alloc] initWithTitle:@"Quit Vox"
+                                                           action:@selector(quitClicked:)
+                                                    keyEquivalent:@"q"] autorelease];
         [quitItem setTarget:appDelegate];
         [statusMenu addItem:quitItem];
 
@@ -225,22 +227,31 @@ void uiInit(const char *hotkeyLabel) {
 }
 
 void uiSetSymbol(const char *name) {
-    NSString *s = [NSString stringWithUTF8String:name];
+    // Copy the C string into a heap buffer so the dispatch block owns the data.
+    // Creating NSString inside the block avoids autoreleased objects on cgo
+    // threads that lack an @autoreleasepool.
+    char *copy = strdup(name);
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *s = [NSString stringWithUTF8String:copy];
+        free(copy);
         rememberAndApply(s);
     });
 }
 
 void uiSetStatusLine(const char *text) {
-    NSString *s = [NSString stringWithUTF8String:text];
+    char *copy = strdup(text);
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *s = [NSString stringWithUTF8String:copy];
+        free(copy);
         statusLineItem.title = s;
     });
 }
 
 void uiSetLastText(const char *text) {
-    NSString *s = [NSString stringWithUTF8String:text];
+    char *copy = strdup(text);
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *s = [NSString stringWithUTF8String:copy];
+        free(copy);
         if ([s length] == 0) {
             [lastTextItem setHidden:YES];
             return;
@@ -304,9 +315,11 @@ void uiSetHotkeyPresets(const char **specs, const char **labels, int count, cons
 // hotkey change so the menu reflects the new active selection. Accepts a
 // comma-separated list so multi-hotkey configurations stay in sync.
 void uiSetHotkeyCheckmark(const char *spec) {
-    NSString *s = [NSString stringWithUTF8String:spec];
-    NSSet<NSString *> *set = specSetFromCSV(s);
+    char *copy = strdup(spec);
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *s = [NSString stringWithUTF8String:copy];
+        free(copy);
+        NSSet<NSString *> *set = specSetFromCSV(s);
         for (NSMenuItem *item in hotkeyPresetsMenu.itemArray) {
             BOOL on = [set containsObject:(NSString *)item.representedObject];
             [item setState:on ? NSControlStateValueOn : NSControlStateValueOff];
@@ -316,9 +329,11 @@ void uiSetHotkeyCheckmark(const char *spec) {
 
 // Updates the disabled "Hotkey: X" info row in the main menu.
 void uiSetHotkeyLabel(const char *label) {
-    NSString *l = label ? [NSString stringWithUTF8String:label] : @"";
-    NSString *s = [NSString stringWithFormat:@"Hotkey: %@", l];
+    char *copy = label ? strdup(label) : NULL;
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *l = copy ? [NSString stringWithUTF8String:copy] : @"";
+        if (copy) free(copy);
+        NSString *s = [NSString stringWithFormat:@"Hotkey: %@", l];
         hotkeyLineItem.title = s;
     });
 }

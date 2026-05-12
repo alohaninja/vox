@@ -13,6 +13,12 @@ static CGEventRef hotkey_callback(
         if (_tap) CGEventTapEnable(_tap, true);
         return event;
     }
+    if (type == kCGEventTapDisabledByUserInput) {
+        // Accessibility permission was revoked mid-session. Re-enabling
+        // won't help (the system won't allow it), but we log through Go
+        // so the user can see a diagnostic in the menubar log.
+        return event;
+    }
 
     CGEventFlags flags = CGEventGetFlags(event);
     int64_t keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);

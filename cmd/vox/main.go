@@ -206,10 +206,10 @@ func run() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	go shutdownWatcher(logger, recorder, sigCh)
-	go showLogWatcher(logger)
-	go hotkeyChangeWatcher(logger, listener)
-	go settingsWatcher(logger, recorder)
+	go shutdownWatcher(cancel, logger, recorder, sigCh)
+	go showLogWatcher(ctx, logger)
+	go hotkeyChangeWatcher(ctx, logger, listener)
+	go settingsWatcher(ctx, logger, recorder)
 	go runEventLoop(ctx, cfg, logger, listener, recorder, pipe)
 
 	// Run NSApp's main loop on the main goroutine. Returns when the user
@@ -218,12 +218,14 @@ func run() {
 }
 
 // shutdownWatcher waits for either an OS signal or a menubar Quit click,
-// then drains the recorder and tells NSApp to terminate.
-func shutdownWatcher(logger *slog.Logger, recorder *audio.Recorder, sigCh <-chan os.Signal) {
+// then cancels the context (so watcher goroutines exit), drains the
+// recorder, and tells NSApp to terminate.
+func shutdownWatcher(cancel context.CancelFunc, logger *slog.Logger, recorder *audio.Recorder, sigCh <-chan os.Signal) {
 	select {
 	case <-sigCh:
 	case <-ui.OnQuit():
 	}
+	cancel() // signal all watcher goroutines to stop
 	cleanup(logger, recorder)
 	if p := os.Getenv("VOX_LOG_PATH"); p != "" {
 		_ = os.Remove(p)
@@ -261,21 +263,26 @@ func triggerLabel(triggers []hotkey.Trigger) string {
 //
 // VOX_HOTKEY env var is intentionally NOT updated — the env var is a
 // per-process override; the menu is the persistent source of truth.
-func hotkeyChangeWatcher(logger *slog.Logger, listener *hotkey.Listener) {
-	for spec := range ui.OnHotkeyChange() {
-		triggers, err := config.ParseHotkeys(spec)
-		if err != nil {
-			logger.Warn("invalid hotkey spec from menu", "spec", spec, "error", err)
-			continue
+func hotkeyChangeWatcher(ctx context.Context, logger *slog.Logger, listener *hotkey.Listener) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case spec := <-ui.OnHotkeyChange():
+			triggers, err := config.ParseHotkeys(spec)
+			if err != nil {
+				logger.Warn("invalid hotkey spec from menu", "spec", spec, "error", err)
+				continue
+			}
+			listener.SetTriggers(triggers)
+			label := triggerLabel(triggers)
+			ui.SetHotkeyLabel(label)
+			ui.SetHotkeyCheckmark(spec)
+			if err := config.SavePref(func(p *config.Prefs) { p.Hotkey = spec }); err != nil {
+				logger.Warn("save prefs", "error", err)
+			}
+			fmt.Printf("Hotkey changed to %s\n", label)
 		}
-		listener.SetTriggers(triggers)
-		label := triggerLabel(triggers)
-		ui.SetHotkeyLabel(label)
-		ui.SetHotkeyCheckmark(spec)
-		if err := config.SavePref(func(p *config.Prefs) { p.Hotkey = spec }); err != nil {
-			logger.Warn("save prefs", "error", err)
-		}
-		fmt.Printf("Hotkey changed to %s\n", label)
 	}
 }
 
@@ -285,7 +292,7 @@ func hotkeyChangeWatcher(logger *slog.Logger, listener *hotkey.Listener) {
 // click feels instantaneous. Pause itself is *not* persisted: a fresh launch
 // should always be active so users don't get stuck in a silently-paused vox
 // after a reboot.
-func settingsWatcher(logger *slog.Logger, recorder *audio.Recorder) {
+func settingsWatcher(ctx context.Context, logger *slog.Logger, recorder *audio.Recorder) {
 	save := func(name string, mutate func(*config.Prefs)) {
 		if err := config.SavePref(mutate); err != nil {
 			logger.Warn("save prefs", "field", name, "error", err)
@@ -293,6 +300,8 @@ func settingsWatcher(logger *slog.Logger, recorder *audio.Recorder) {
 	}
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case paused := <-ui.OnPauseToggle():
 			settings.Paused.Store(paused)
 			ui.SetPaused(paused)
@@ -336,25 +345,37 @@ func boolWord(b bool, ifTrue, ifFalse string) string {
 
 // showLogWatcher opens VOX_LOG_PATH (or a sensible default) in Console.app
 // whenever the user picks "Show Log…" from the menubar.
-func showLogWatcher(logger *slog.Logger) {
-	for range ui.OnShowLog() {
-		path := os.Getenv("VOX_LOG_PATH")
-		if path == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				logger.Warn("show log: cannot resolve home directory", "error", err)
+func showLogWatcher(ctx context.Context, logger *slog.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ui.OnShowLog():
+			path := os.Getenv("VOX_LOG_PATH")
+			if path == "" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					logger.Warn("show log: cannot resolve home directory", "error", err)
+					continue
+				}
+				path = filepath.Join(home, "Library", "Logs", "vox.log")
+			}
+			if _, err := os.Stat(path); err != nil {
+				logger.Warn("show log: file not found", "path", path)
 				continue
 			}
-			path = filepath.Join(home, "Library", "Logs", "vox.log")
-		}
-		if _, err := os.Stat(path); err != nil {
-			logger.Warn("show log: file not found", "path", path)
-			continue
-		}
-		// Open in Console.app for syntax highlighting and tail-following.
-		if err := exec.Command("open", "-a", "Console", path).Start(); err != nil {
-			// Fall back to whatever app is configured for .log files.
-			_ = exec.Command("open", path).Start()
+			// Open in Console.app for syntax highlighting and tail-following.
+			// Use go cmd.Wait() to reap the child process and avoid zombies.
+			cmd := exec.Command("open", "-a", "Console", path)
+			if err := cmd.Start(); err != nil {
+				// Fall back to whatever app is configured for .log files.
+				cmd = exec.Command("open", path)
+				if err := cmd.Start(); err == nil {
+					go cmd.Wait()
+				}
+			} else {
+				go cmd.Wait()
+			}
 		}
 	}
 }
