@@ -322,7 +322,10 @@ func injectStage() pipeline.Stage {
 	return func(_ context.Context, r *pipeline.Result) error {
 		fmt.Printf(">>> %s\n", r.OutputText)
 		if err := inject.TypeText(r.OutputText); err != nil {
-			fmt.Printf("Error pasting text: %v\n", err)
+			if !errors.Is(err, inject.ErrNotSupported) {
+				fmt.Printf("Error pasting text: %v\n", err)
+			}
+			// On unsupported platforms the text was already printed above.
 		}
 		return nil
 	}
