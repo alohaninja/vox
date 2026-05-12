@@ -36,9 +36,15 @@ func main() {
 func run() {
 	log.SetFlags(0)
 
-	if len(os.Args) > 1 && os.Args[1] == "setup" {
-		runSetup()
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "setup":
+			runSetup()
+			return
+		case "config":
+			runConfig()
+			return
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
