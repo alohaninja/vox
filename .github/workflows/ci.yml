@@ -1,11 +1,20 @@
-name: PR Checks
+name: CI
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+# Cancel in-progress runs for the same PR/branch (but not main pushes).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  go-checks:
+  # ── Build ──────────────────────────────────────────────────────────────
+  build:
+    name: Build (macOS)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,8 +25,90 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Run tests
-        run: go test -v ./...
+      - name: Build binary
+        run: go build -o bin/vox ./cmd/vox
 
-      - name: Run vet
+      - name: Verify binary runs
+        run: |
+          bin/vox setup 2>&1; rc=$?
+          # Tolerate expected permission failures (exit 1) but catch crashes/signals (exit > 128)
+          if [ $rc -gt 128 ]; then
+            echo "::error::vox setup crashed with signal $((rc - 128))"
+            exit 1
+          fi
+
+  # ── Tests ──────────────────────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests (with race detector)
+        run: go test -race -short -v ./...
+
+  # ── Lint ───────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
         run: go vet ./...
+
+      - name: Check formatting
+        run: |
+          gofmt -s -l . > /tmp/gofmt.out
+          if [ -s /tmp/gofmt.out ]; then
+            echo "::error::The following files are not formatted. Run 'make fmt':"
+            cat /tmp/gofmt.out
+            exit 1
+          fi
+
+      - name: Check go.mod tidiness
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum || {
+            echo "::error::go.mod/go.sum are not tidy. Run 'go mod tidy'."
+            exit 1
+          }
+
+  # ── Cross-compile ─────────────────────────────────────────────────────
+  # Skipped until platform stubs are added for internal/hotkey and
+  # internal/inject (darwin-only packages today). Remove the if: guard
+  # once cross-platform support lands.
+  cross-compile:
+    if: false
+    name: Cross-compile (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Compile
+        env:
+          GOOS: ${{ matrix.goos }}
+          CGO_ENABLED: "0"
+        run: go build -o /dev/null ./cmd/vox

@@ -1,4 +1,4 @@
-.PHONY: build test test-short lint run setup start clean install deps fmt
+.PHONY: build test test-short test-race lint run setup start clean install deps fmt ci check-fmt
 
 export CGO_LDFLAGS := -Wl,-no_warn_duplicate_libraries
 
@@ -10,6 +10,9 @@ test:
 
 test-short:
 	go test -short -v ./...
+
+test-race:
+	go test -race -short -v ./...
 
 lint:
 	go vet ./...
@@ -90,3 +93,15 @@ deps:
 
 fmt:
 	gofmt -s -w .
+
+check-fmt:
+	@unformatted=$$(gofmt -s -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "Error: unformatted files:"; \
+		echo "$$unformatted"; \
+		echo "Run: make fmt"; \
+		exit 1; \
+	fi
+
+ci: build lint check-fmt test-race
+	@echo "All CI checks passed."
