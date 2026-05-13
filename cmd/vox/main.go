@@ -178,9 +178,12 @@ func run() {
 		Language:      cfg.Language,
 	}
 
-	// Initialize Claude API client (nil if no ANTHROPIC_API_KEY).
+	// Initialize Claude API client. Key can come from:
+	//   1. ANTHROPIC_API_KEY env var (personal key)
+	//   2. vox-anthropic-key LD flag (team-managed key)
+	//   3. ~/.vox/config.yaml anthropic_key field
 	var claudeClient *claude.Client
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+	if apiKey := flagClient.AnthropicKey(); apiKey != "" {
 		claudeClient = claude.NewClient(apiKey, flagClient.AIModel())
 		if cfg.Verbose {
 			logger.Debug("Claude API client initialized", "model", flagClient.AIModel())

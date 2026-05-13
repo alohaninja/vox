@@ -23,6 +23,7 @@ const (
 	KeyContextAware     = "vox-context-aware"
 	KeyStreamingOverlay = "vox-streaming-overlay"
 	KeyAIModel          = "vox-ai-model"
+	KeyAnthropicKey     = "vox-anthropic-key"
 )
 
 // Client wraps the LD SDK client with Vox-specific flag helpers.
@@ -136,6 +137,32 @@ func (c *Client) AIModel() string {
 		return *c.userCfg.AIModel
 	}
 	return defaultModel
+}
+
+// AnthropicKey returns the Anthropic API key to use.
+// Precedence: ANTHROPIC_API_KEY env > vox-anthropic-key LD flag > config file > empty.
+//
+// The LD flag enables a team admin to set the key centrally so individual
+// developers don't need personal API keys or Anthropic accounts.
+func (c *Client) AnthropicKey() string {
+	// Env var always wins -- allows personal override.
+	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+		return v
+	}
+	// LD flag -- team-managed key.
+	if c.ld != nil {
+		val, detail, _ := c.ld.StringVariationDetailCtx(
+			context.Background(), KeyAnthropicKey, c.ctx, "",
+		)
+		if detail.Reason.GetKind() != ldreason.EvalReasonError && val != "" {
+			return val
+		}
+	}
+	// Config file.
+	if c.userCfg.AnthropicKey != nil && *c.userCfg.AnthropicKey != "" {
+		return *c.userCfg.AnthropicKey
+	}
+	return ""
 }
 
 // boolFlag evaluates a boolean flag with the precedence chain:

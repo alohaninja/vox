@@ -70,6 +70,28 @@ func TestAIModelPrecedence(t *testing.T) {
 	}
 }
 
+func TestAnthropicKeyPrecedence(t *testing.T) {
+	c := &Client{userCfg: userconfig.Config{}}
+
+	// Default: empty (no key configured).
+	if got := c.AnthropicKey(); got != "" {
+		t.Errorf("AnthropicKey() = %q, want empty", got)
+	}
+
+	// Config file.
+	key := "sk-config-key"
+	c.userCfg.AnthropicKey = &key
+	if got := c.AnthropicKey(); got != "sk-config-key" {
+		t.Errorf("AnthropicKey() = %q, want sk-config-key from config", got)
+	}
+
+	// Env var overrides config.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-env-key")
+	if got := c.AnthropicKey(); got != "sk-env-key" {
+		t.Errorf("AnthropicKey() = %q, want sk-env-key from env", got)
+	}
+}
+
 func TestNilClientGraceful(t *testing.T) {
 	// All methods should work with a nil LD client.
 	c := &Client{userCfg: userconfig.Config{}}
@@ -80,6 +102,7 @@ func TestNilClientGraceful(t *testing.T) {
 	_ = c.ContextAware()
 	_ = c.StreamingOverlay()
 	_ = c.AIModel()
+	_ = c.AnthropicKey()
 	c.Close() // should not panic
 }
 
@@ -131,6 +154,7 @@ func TestFlagKeyConstants(t *testing.T) {
 		KeyContextAware,
 		KeyStreamingOverlay,
 		KeyAIModel,
+		KeyAnthropicKey,
 	}
 	for _, k := range keys {
 		if k == "" {
