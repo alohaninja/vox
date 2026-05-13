@@ -205,12 +205,15 @@ func run() {
 		Language:      cfg.Language,
 	}
 
-	// Initialize Claude API client (nil if no ANTHROPIC_API_KEY).
+	// Initialize Claude API client. Key can come from:
+	//   1. ANTHROPIC_API_KEY env var (personal key)
+	//   2. vox-anthropic-key LD flag (team-managed key)
+	//   3. ~/.vox/config.yaml anthropic_key field
 	var claudeClient *claude.Client
-	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+	if apiKey, keySource := flagClient.AnthropicKey(); apiKey != "" {
 		claudeClient = claude.NewClient(apiKey, flagClient.AIModel())
 		if cfg.Verbose {
-			logger.Debug("Claude API client initialized", "model", flagClient.AIModel())
+			logger.Debug("Claude API client initialized", "model", flagClient.AIModel(), "key_source", keySource)
 		}
 	}
 
@@ -594,11 +597,13 @@ func runSetup() {
 	// Step 3: AI features.
 	fmt.Println("[3/3] AI Features")
 	if os.Getenv("ANTHROPIC_API_KEY") != "" {
-		fmt.Println("  ANTHROPIC_API_KEY: set")
-		fmt.Println("  Run 'vox config' to enable AI features (post-processing, prompt mode, etc.)")
+		fmt.Println("  Anthropic API key: set (via ANTHROPIC_API_KEY env var)")
 	} else {
-		fmt.Println("  ANTHROPIC_API_KEY: not set (AI features disabled)")
-		fmt.Println("  Set ANTHROPIC_API_KEY to enable AI post-processing, prompt mode, and voice commands.")
+		fmt.Println("  Anthropic API key: not set via env var")
+		fmt.Println("  AI features can be enabled by any of:")
+		fmt.Println("    - ANTHROPIC_API_KEY env var (personal key)")
+		fmt.Println("    - vox-anthropic-key LD flag (team-managed key)")
+		fmt.Println("    - ~/.vox/config.yaml anthropic_key field")
 	}
 	if os.Getenv("VOX_LD_SDK_KEY") != "" {
 		fmt.Println("  VOX_LD_SDK_KEY:   set (LaunchDarkly flag control enabled)")
