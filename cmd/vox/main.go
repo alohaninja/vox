@@ -17,13 +17,21 @@ import (
 
 	"golang.design/x/mainthread"
 
+	"vox/internal/appctx"
 	"vox/internal/audio"
+	"vox/internal/classify"
+	"vox/internal/claude"
+	"vox/internal/commands"
 	"vox/internal/config"
+	"vox/internal/flags"
+	"vox/internal/format"
 	"vox/internal/hotkey"
 	"vox/internal/inject"
 	"vox/internal/pipeline"
+	"vox/internal/prompt"
 	"vox/internal/transcribe"
 	"vox/internal/ui"
+	"vox/internal/userconfig"
 	"vox/internal/vocab"
 )
 
@@ -101,6 +109,19 @@ func run() {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	}
 
+	// Load user config file (~/.vox/config.yaml).
+	userCfg, err := userconfig.Load()
+	if err != nil {
+		logger.Warn("failed to load user config", "error", err)
+	}
+
+	// Initialize LaunchDarkly flags (graceful if no SDK key).
+	flagClient, err := flags.Init(userCfg)
+	if err != nil {
+		logger.Warn("LD flags init", "error", err)
+	}
+	defer flagClient.Close()
+
 	// Check Accessibility permission.
 	if !hotkey.CheckAccessibility() {
 		fmt.Fprintln(os.Stderr, "Error: Accessibility permission required.")
@@ -111,13 +132,13 @@ func run() {
 
 	// Check Microphone permission.
 	if !hotkey.RequestMicrophoneAccess() {
-		fmt.Fprintln(os.Stderr, "❌ Microphone denied — grant it in System Settings > Privacy & Security > Microphone")
+		fmt.Fprintln(os.Stderr, "Microphone denied — grant it in System Settings > Privacy & Security > Microphone")
 		os.Exit(1)
 	}
 
 	// Check Whisper server.
-	client := transcribe.NewClient(cfg.WhisperURL)
-	if err := client.HealthCheck(ctx); err != nil {
+	whisperClient := transcribe.NewClient(cfg.WhisperURL)
+	if err := whisperClient.HealthCheck(ctx); err != nil {
 		fmt.Printf("Warning: Whisper server unavailable at %s (%v)\n", cfg.WhisperURL, err)
 		fmt.Println("  Transcription will fail until the server is reachable.")
 		fmt.Println()
@@ -143,7 +164,6 @@ func run() {
 	// Load custom vocabulary for whisper.cpp hints.
 	var initialPrompt string
 	if cfg.VocabTerms != "" || cfg.VocabFile != "" {
-		var err error
 		initialPrompt, err = vocab.Load(cfg.VocabTerms, cfg.VocabFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to load vocabulary: %v\n", err)
@@ -157,6 +177,24 @@ func run() {
 		InitialPrompt: initialPrompt,
 		Language:      cfg.Language,
 	}
+
+	// Initialize Claude API client (nil if no ANTHROPIC_API_KEY).
+	var claudeClient *claude.Client
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		claudeClient = claude.NewClient(apiKey, flagClient.AIModel())
+		if cfg.Verbose {
+			logger.Debug("Claude API client initialized", "model", flagClient.AIModel())
+		}
+	}
+
+	// Initialize prompt mode executor.
+	var promptExec *prompt.Executor
+	if claudeClient != nil {
+		promptExec = prompt.NewExecutor(claudeClient, inject.ReadClipboard)
+	}
+
+	// Initialize voice command registry.
+	cmdRegistry := commands.NewRegistry(commands.DefaultCommands()...)
 
 	// Build hotkey labels for display.
 	hotkeyLabel := triggerLabel(cfg.Triggers)
@@ -186,18 +224,38 @@ func run() {
 		os.Exit(1)
 	}
 
-	if cfg.HoldToTalk {
-		fmt.Printf("✅ Vox is running in your menubar — Hold %s to dictate.\n", hotkeyLabel)
-	} else {
-		fmt.Printf("✅ Vox is running in your menubar — Press %s to start/stop dictation.\n", hotkeyLabel)
+	// Print active features.
+	fmt.Printf("Hotkey: %s (%s mode)\n", hotkeyLabel, modeLabel(cfg.HoldToTalk))
+	if claudeClient != nil {
+		var features []string
+		if flagClient.AIPostProcess() {
+			features = append(features, "AI post-processing")
+		}
+		if flagClient.PromptMode() {
+			features = append(features, "prompt mode")
+		}
+		if flagClient.VoiceCommands() {
+			features = append(features, "voice commands")
+		}
+		if flagClient.ContextAware() {
+			features = append(features, "context-aware")
+		}
+		if len(features) > 0 {
+			fmt.Printf("AI:     %s (model: %s)\n", strings.Join(features, ", "), flagClient.AIModel())
+		}
 	}
 	fmt.Println("   Quit from the menubar icon or send SIGINT/SIGTERM.")
 	fmt.Println()
+	fmt.Printf("Ready — %s to dictate.\n\n", hotkeyLabel)
 
-	// Build the processing pipeline.
+	// Build the processing pipeline with all features.
 	pipe := pipeline.New(
-		transcribeStage(client, transcribeOpts),
+		transcribeStage(whisperClient, transcribeOpts),
 		filterBlankStage(),
+		classifyStage(flagClient),
+		postProcessStage(claudeClient, flagClient),
+		promptModeStage(promptExec, flagClient),
+		commandStage(cmdRegistry, flagClient),
 		injectStage(),
 	)
 
@@ -381,25 +439,62 @@ func showLogWatcher(ctx context.Context, logger *slog.Logger) {
 }
 
 func runSetup() {
-	fmt.Println("Checking permissions...")
+	fmt.Print(banner)
+	fmt.Println("Setup")
+	fmt.Println("=====")
 	fmt.Println()
 
-	fmt.Print("Accessibility: ")
+	// Step 1: Permissions.
+	fmt.Println("[1/3] Permissions")
+
+	fmt.Print("  Accessibility: ")
 	if hotkey.CheckAccessibility() {
-		fmt.Println("✅ granted")
+		fmt.Println("granted")
 	} else {
-		fmt.Println("⏳ requested — grant it in System Settings > Privacy & Security > Accessibility")
+		fmt.Println("requested — grant in System Settings > Privacy & Security > Accessibility")
 	}
 
-	fmt.Print("Microphone:    ")
+	fmt.Print("  Microphone:    ")
 	if hotkey.RequestMicrophoneAccess() {
-		fmt.Println("✅ granted")
+		fmt.Println("granted")
 	} else {
-		fmt.Println("❌ denied — grant it in System Settings > Privacy & Security > Microphone")
+		fmt.Println("denied — grant in System Settings > Privacy & Security > Microphone")
 	}
-
 	fmt.Println()
-	fmt.Println("Done. Run: make start")
+
+	// Step 2: Dependencies.
+	fmt.Println("[2/3] Dependencies")
+	checkDep("sox (rec)", "rec")
+	checkDep("ffmpeg", "ffmpeg")
+	checkDep("whisper-server", "whisper-server")
+	fmt.Println()
+
+	// Step 3: AI features.
+	fmt.Println("[3/3] AI Features")
+	if os.Getenv("ANTHROPIC_API_KEY") != "" {
+		fmt.Println("  ANTHROPIC_API_KEY: set")
+		fmt.Println("  Run 'vox config' to enable AI features (post-processing, prompt mode, etc.)")
+	} else {
+		fmt.Println("  ANTHROPIC_API_KEY: not set (AI features disabled)")
+		fmt.Println("  Set ANTHROPIC_API_KEY to enable AI post-processing, prompt mode, and voice commands.")
+	}
+	if os.Getenv("VOX_LD_SDK_KEY") != "" {
+		fmt.Println("  VOX_LD_SDK_KEY:   set (LaunchDarkly flag control enabled)")
+	}
+	fmt.Println()
+
+	fmt.Println("Done. Next steps:")
+	fmt.Println("  vox config    Configure AI features interactively")
+	fmt.Println("  make start    Start whisper + vox")
+	fmt.Println("  vox help      See all options")
+}
+
+func checkDep(name, binary string) {
+	if _, err := exec.LookPath(binary); err == nil {
+		fmt.Printf("  %s: installed\n", name)
+	} else {
+		fmt.Printf("  %s: not found\n", name)
+	}
 }
 
 // runEventLoop is the single hotkey handler. The hold-vs-toggle behavior is
@@ -571,6 +666,108 @@ func injectStage() pipeline.Stage {
 		}
 		return nil
 	}
+}
+
+// classifyStage determines if speech is dictation, a prompt, or a command.
+func classifyStage(fc *flags.Client) pipeline.Stage {
+	return func(_ context.Context, r *pipeline.Result) error {
+		// Only classify if prompt mode or voice commands are enabled.
+		if !fc.PromptMode() && !fc.VoiceCommands() {
+			return nil
+		}
+		intent := classify.Classify(r.RawText)
+		switch intent.Mode {
+		case classify.ModePrompt:
+			if fc.PromptMode() {
+				r.Mode = pipeline.ModePrompt
+				r.Metadata = map[string]string{
+					"action":  intent.Action,
+					"subject": intent.Subject,
+					"args":    intent.RawArgs,
+				}
+			}
+		case classify.ModeCommand:
+			if fc.VoiceCommands() {
+				r.Mode = pipeline.ModeCommand
+				r.Metadata = map[string]string{
+					"action": intent.Action,
+					"args":   intent.RawArgs,
+				}
+			}
+		}
+		return nil
+	}
+}
+
+// postProcessStage sends dictation text through Claude for grammar/punctuation cleanup.
+func postProcessStage(cc *claude.Client, fc *flags.Client) pipeline.Stage {
+	return func(ctx context.Context, r *pipeline.Result) error {
+		if cc == nil || !fc.AIPostProcess() || r.Mode != pipeline.ModeDictation {
+			return nil
+		}
+
+		systemPrompt := claude.PostProcessSystemPrompt
+		if fc.ContextAware() {
+			app := appctx.Detect()
+			systemPrompt = format.SystemPromptWithHint(systemPrompt, app.Category())
+		}
+
+		processed, err := cc.Complete(ctx, systemPrompt, r.RawText)
+		if err != nil {
+			// Non-fatal: fall back to raw text.
+			fmt.Printf("Warning: AI post-processing failed: %v\n", err)
+			return nil
+		}
+		r.ProcessedText = processed
+		r.OutputText = processed
+		return nil
+	}
+}
+
+// promptModeStage handles prompt-mode actions (summarize, explain, rewrite, etc.).
+func promptModeStage(exec *prompt.Executor, fc *flags.Client) pipeline.Stage {
+	return func(ctx context.Context, r *pipeline.Result) error {
+		if r.Mode != pipeline.ModePrompt || exec == nil || !fc.PromptMode() {
+			return nil
+		}
+		action := r.Metadata["action"]
+		subject := r.Metadata["subject"]
+		args := r.Metadata["args"]
+
+		fmt.Printf("[prompt: %s] ", action)
+		result, err := exec.Execute(ctx, action, subject, args)
+		if err != nil {
+			return fmt.Errorf("prompt mode (%s): %w", action, err)
+		}
+		r.OutputText = result
+		return nil
+	}
+}
+
+// commandStage executes voice commands (create PR, query flag, etc.).
+func commandStage(reg *commands.Registry, fc *flags.Client) pipeline.Stage {
+	return func(ctx context.Context, r *pipeline.Result) error {
+		if r.Mode != pipeline.ModeCommand || !fc.VoiceCommands() {
+			return nil
+		}
+		action := r.Metadata["action"]
+		args := r.Metadata["args"]
+
+		fmt.Printf("[command: %s] ", action)
+		result, err := reg.Execute(ctx, action, args)
+		if err != nil {
+			return fmt.Errorf("voice command (%s): %w", action, err)
+		}
+		r.OutputText = result
+		return nil
+	}
+}
+
+func modeLabel(holdToTalk bool) string {
+	if holdToTalk {
+		return "hold-to-talk"
+	}
+	return "toggle"
 }
 
 // isBlankAudio returns true if the transcription is a whisper hallucination
