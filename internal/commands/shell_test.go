@@ -65,7 +65,7 @@ func TestDefaultCommandsRegistered(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	expected := []string{"create-pr", "list-issues", "query-flag", "create-ticket", "open-url"}
+	expected := []string{"create-pr", "list-issues", "query-flag", "create-ticket", "open-url", "git-commit", "git-status", "git-diff", "git-push", "git-pull", "run-tests"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing default command: %s", name)
@@ -77,7 +77,7 @@ func TestDefaultCommandsMatch(t *testing.T) {
 	cmds := DefaultCommands()
 	r := NewRegistry(cmds...)
 
-	actions := []string{"create-pr", "list-issues", "query-flag", "create-ticket", "open-url"}
+	actions := []string{"create-pr", "list-issues", "query-flag", "create-ticket", "open-url", "git-commit", "git-status", "git-diff", "git-push", "git-pull", "run-tests"}
 	for _, action := range actions {
 		found := false
 		for _, cmd := range r.commands {

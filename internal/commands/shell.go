@@ -138,6 +138,36 @@ func DefaultCommands() []Command {
 			return "echo", []string{fmt.Sprintf("[TODO] Create Jira ticket: %s", summary)}
 		}),
 
+		NewShellCommand("git-commit", []string{"git-commit"}, func(args string) (string, []string) {
+			if args == "" {
+				return "echo", []string{"usage: commit with message <message>"}
+			}
+			return "git", []string{"commit", "-am", args}
+		}),
+
+		NewShellCommand("git-status", []string{"git-status"}, func(args string) (string, []string) {
+			return "git", []string{"status", "--short", "--branch"}
+		}),
+
+		NewShellCommand("git-diff", []string{"git-diff"}, func(args string) (string, []string) {
+			return "git", []string{"diff", "--stat"}
+		}),
+
+		NewShellCommand("git-push", []string{"git-push"}, func(args string) (string, []string) {
+			return "git", []string{"push"}
+		}),
+
+		NewShellCommand("git-pull", []string{"git-pull"}, func(args string) (string, []string) {
+			return "git", []string{"pull"}
+		}),
+
+		NewShellCommand("run-tests", []string{"run-tests"}, func(args string) (string, []string) {
+			if args != "" {
+				return "go", []string{"test", "-v", args}
+			}
+			return "go", []string{"test", "./..."}
+		}),
+
 		NewShellCommand("open-url", []string{"open-url"}, func(args string) (string, []string) {
 			if args == "" {
 				return "echo", []string{"usage: open <url>"}
