@@ -142,7 +142,7 @@ func DefaultCommands() []Command {
 			if args == "" {
 				return "echo", []string{"usage: commit with message <message>"}
 			}
-			return "git", []string{"commit", "-am", args}
+			return "git", []string{"commit", "-m", args}
 		}),
 
 		NewShellCommand("git-status", []string{"git-status"}, func(args string) (string, []string) {
@@ -154,15 +154,26 @@ func DefaultCommands() []Command {
 		}),
 
 		NewShellCommand("git-push", []string{"git-push"}, func(args string) (string, []string) {
-			return "git", []string{"push"}
+			cmdArgs := []string{"push"}
+			if args != "" {
+				cmdArgs = append(cmdArgs, strings.Fields(args)...)
+			}
+			return "git", cmdArgs
 		}),
 
 		NewShellCommand("git-pull", []string{"git-pull"}, func(args string) (string, []string) {
-			return "git", []string{"pull"}
+			cmdArgs := []string{"pull", "--ff-only"}
+			if args != "" {
+				cmdArgs = append(cmdArgs, strings.Fields(args)...)
+			}
+			return "git", cmdArgs
 		}),
 
 		NewShellCommand("run-tests", []string{"run-tests"}, func(args string) (string, []string) {
 			if args != "" {
+				if !strings.HasPrefix(args, "./") || strings.Contains(args, "..") {
+					return "echo", []string{"usage: run test ./package/path"}
+				}
 				return "go", []string{"test", "-v", args}
 			}
 			return "go", []string{"test", "./..."}

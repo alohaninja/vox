@@ -75,9 +75,10 @@ func TestClassifyCommandMode(t *testing.T) {
 		{"git diff", "git diff", "git-diff", ""},
 		{"show diff", "show diff", "git-diff", ""},
 		{"git push", "git push", "git-push", ""},
-		{"push changes", "push changes", "git-push", ""},
+		{"push my changes", "push my changes", "git-push", ""},
 		{"git pull", "git pull", "git-pull", ""},
-		{"pull latest", "pull latest", "git-pull", ""},
+		{"pull from remote", "pull from remote", "git-pull", ""},
+		{"pull latest changes", "pull latest changes", "git-pull", ""},
 		{"run tests", "run tests", "run-tests", ""},
 		{"run the tests", "run the tests", "run-tests", ""},
 		{"run test specific", "run test ./internal/flags/", "run-tests", "./internal/flags/"},
@@ -128,6 +129,14 @@ func TestClassifyDictation(t *testing.T) {
 		// Word-boundary: "create a pr..." / "create pr..." that isn't about PRs
 		"create a presentation deck",
 		"create problems for the team",
+		// Word-boundary: git/test phrases in natural dictation
+		"push changes to the next sprint",
+		"pull latest reports from the dashboard",
+		"pull changes from the staging branch and review them",
+		"push changes to the review board",
+		"commit message looks wrong to me",
+		"the commit message is too long",
+		"show different options to the user",
 		// "open" without a URL should be dictation
 		"open the door",
 		"open source software is great",
