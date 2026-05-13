@@ -85,6 +85,9 @@ func run() {
 		case "help", "--help", "-h":
 			runHelp()
 			return
+		case "test":
+			runTest()
+			return
 		case "version", "--version":
 			fmt.Println(version)
 			return
