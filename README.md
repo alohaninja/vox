@@ -79,7 +79,7 @@ make status   # shows whether Vox is running
 tail -f logs/vox.log
 ```
 
-`make start` runs `setup` (idempotent install of deps + default base model) and `app` (builds and signs `bin/Vox.app`), then launches `Vox.app/Contents/MacOS/vox` detached via `nohup`. Vox now spawns and manages `whisper-server` when `WHISPER_URL` is the default local endpoint. PID lands in `logs/vox.pid`, output redirects to `logs/*.log`, and the command returns immediately -- you can close the terminal and Vox keeps running in your menubar. To shut it down either click the menubar icon and choose **Quit Vox**, or run `make stop`.
+`make start` runs `setup` (idempotent install of deps + default base model) and `app` (builds and signs `bin/Vox.app`), then launches `Vox.app/Contents/MacOS/vox` detached via `nohup`. Vox spawns and manages its own `whisper-server` child on `127.0.0.1:2022` -- there's no remote-server mode. PID lands in `logs/vox.pid`, output redirects to `logs/*.log`, and the command returns immediately -- you can close the terminal and Vox keeps running in your menubar. To shut it down either click the menubar icon and choose **Quit Vox**, or run `make stop`.
 
 ## macOS permissions
 
@@ -97,7 +97,6 @@ All via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VOX_HOTKEY` | `option+space` | Hotkey to trigger recording. Comma-separated for multiple. |
-| `WHISPER_URL` | `http://127.0.0.1:2022` | Whisper server URL |
 | `VOX_WHISPER_MODEL_ID` | `base.en` | Initial model ID (`tiny.en`, `base.en`, `small.en`, `medium.en`, `large-v3-turbo`) |
 | `VOX_HOLD_TO_TALK` | `true` | `true` = hold to record, `false` = toggle on/off |
 | `VOX_LANGUAGE` | *(auto-detect)* | BCP-47 language code (e.g. `en`, `es`) |

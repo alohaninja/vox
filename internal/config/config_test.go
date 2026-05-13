@@ -9,7 +9,6 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	t.Setenv("WHISPER_URL", "")
 	t.Setenv("VOX_LANGUAGE", "")
 	t.Setenv("VOX_HOLD_TO_TALK", "")
 	t.Setenv("VOX_VERBOSE", "")
@@ -18,9 +17,6 @@ func TestLoadDefaults(t *testing.T) {
 
 	cfg := Load()
 
-	if cfg.WhisperURL != "http://127.0.0.1:2022" {
-		t.Errorf("WhisperURL = %q, want %q", cfg.WhisperURL, "http://127.0.0.1:2022")
-	}
 	if cfg.Language != "" {
 		t.Errorf("Language = %q, want %q", cfg.Language, "")
 	}
@@ -36,13 +32,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ModelID != "base.en" {
 		t.Errorf("ModelID = %q, want %q", cfg.ModelID, "base.en")
 	}
-	if !cfg.ManageWhisperServer {
-		t.Error("ManageWhisperServer = false, want true")
-	}
 }
 
 func TestLoadFromEnv(t *testing.T) {
-	t.Setenv("WHISPER_URL", "http://example.com:9000")
 	t.Setenv("VOX_LANGUAGE", "en")
 	t.Setenv("VOX_HOLD_TO_TALK", "false")
 	t.Setenv("VOX_VERBOSE", "true")
@@ -51,9 +43,6 @@ func TestLoadFromEnv(t *testing.T) {
 
 	cfg := Load()
 
-	if cfg.WhisperURL != "http://example.com:9000" {
-		t.Errorf("WhisperURL = %q, want %q", cfg.WhisperURL, "http://example.com:9000")
-	}
 	if cfg.Language != "en" {
 		t.Errorf("Language = %q, want %q", cfg.Language, "en")
 	}
@@ -65,35 +54,6 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if cfg.ModelID != "small.en" {
 		t.Errorf("ModelID = %q, want %q", cfg.ModelID, "small.en")
-	}
-	if cfg.ManageWhisperServer {
-		t.Error("ManageWhisperServer = true, want false for non-local URL")
-	}
-}
-
-func TestNormalizeWhisperURL(t *testing.T) {
-	got := NormalizeWhisperURL("http://localhost:2022/")
-	want := "http://127.0.0.1:2022"
-	if got != want {
-		t.Fatalf("NormalizeWhisperURL() = %q, want %q", got, want)
-	}
-}
-
-func TestIsLocalWhisperURL(t *testing.T) {
-	tests := []struct {
-		url  string
-		want bool
-	}{
-		{"http://127.0.0.1:2022", true},
-		{"http://localhost:2022/", true},
-		{"http://127.0.0.1:9999", false},
-		{"https://127.0.0.1:2022", false},
-		{"http://example.com:2022", false},
-	}
-	for _, tt := range tests {
-		if got := IsLocalWhisperURL(tt.url); got != tt.want {
-			t.Errorf("IsLocalWhisperURL(%q) = %t, want %t", tt.url, got, tt.want)
-		}
 	}
 }
 
@@ -120,14 +80,14 @@ func TestBoolParsing(t *testing.T) {
 
 func TestConfigString(t *testing.T) {
 	cfg := Config{
-		WhisperURL: "http://localhost:2022",
 		Language:   "en",
 		HoldToTalk: true,
+		ModelID:    "base.en",
 		Verbose:    false,
 		Triggers:   []hotkey.Trigger{{Label: "Option+Space"}},
 	}
 	s := cfg.String()
-	for _, substr := range []string{"http://localhost:2022", "en", "hold-to-talk", "Option+Space"} {
+	for _, substr := range []string{"en", "hold-to-talk", "Option+Space", "base.en"} {
 		if !strings.Contains(s, substr) {
 			t.Errorf("String() = %q, missing %q", s, substr)
 		}

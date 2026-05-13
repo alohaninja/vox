@@ -2,9 +2,7 @@ package config
 
 import (
 	"fmt"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 
 	"vox/internal/hotkey"
@@ -13,18 +11,16 @@ import (
 
 // Config holds runtime configuration for the vox dictation tool.
 type Config struct {
-	WhisperURL          string
-	Language            string
-	HoldToTalk          bool
-	SoundsEnabled       bool
-	AutoPaste           bool
-	Verbose             bool
-	Hotkey              string
-	Triggers            []hotkey.Trigger
-	VocabTerms          string // Comma-separated domain terms (VOX_VOCAB_TERMS)
-	VocabFile           string // Path to vocab file, one term per line (VOX_VOCAB_FILE)
-	ModelID             string
-	ManageWhisperServer bool
+	Language      string
+	HoldToTalk    bool
+	SoundsEnabled bool
+	AutoPaste     bool
+	Verbose       bool
+	Hotkey        string
+	Triggers      []hotkey.Trigger
+	VocabTerms    string // Comma-separated domain terms (VOX_VOCAB_TERMS)
+	VocabFile     string // Path to vocab file, one term per line (VOX_VOCAB_FILE)
+	ModelID       string
 }
 
 // Load reads configuration from environment variables and the user
@@ -42,7 +38,6 @@ type Config struct {
 // than refusing to start). A malformed VOX_HOTKEY is fatal.
 func Load() Config {
 	prefs, _ := LoadPrefs()
-	whisperURL := NormalizeWhisperURL(envOrDefault("WHISPER_URL", "http://127.0.0.1:2022"))
 
 	hotkeyStr := os.Getenv("VOX_HOTKEY")
 	if hotkeyStr == "" && prefs.Hotkey != "" {
@@ -73,18 +68,16 @@ func Load() Config {
 	}
 
 	return Config{
-		WhisperURL:          whisperURL,
-		Language:            os.Getenv("VOX_LANGUAGE"),
-		HoldToTalk:          holdToTalk,
-		SoundsEnabled:       BoolOr(prefs.SoundsEnabled, true),
-		AutoPaste:           BoolOr(prefs.AutoPaste, true),
-		Verbose:             parseBool(os.Getenv("VOX_VERBOSE"), false),
-		Hotkey:              hotkeyStr,
-		Triggers:            triggers,
-		VocabTerms:          os.Getenv("VOX_VOCAB_TERMS"),
-		VocabFile:           os.Getenv("VOX_VOCAB_FILE"),
-		ModelID:             modelID,
-		ManageWhisperServer: IsLocalWhisperURL(whisperURL),
+		Language:      os.Getenv("VOX_LANGUAGE"),
+		HoldToTalk:    holdToTalk,
+		SoundsEnabled: BoolOr(prefs.SoundsEnabled, true),
+		AutoPaste:     BoolOr(prefs.AutoPaste, true),
+		Verbose:       parseBool(os.Getenv("VOX_VERBOSE"), false),
+		Hotkey:        hotkeyStr,
+		Triggers:      triggers,
+		VocabTerms:    os.Getenv("VOX_VOCAB_TERMS"),
+		VocabFile:     os.Getenv("VOX_VOCAB_FILE"),
+		ModelID:       modelID,
 	}
 }
 
@@ -110,56 +103,9 @@ func (c Config) String() string {
 	}
 
 	return fmt.Sprintf(
-		"WhisperURL=%s Language=%s Mode=%s Hotkey=%s Verbose=%t",
-		c.WhisperURL, lang, mode, hk, c.Verbose,
+		"Language=%s Mode=%s Hotkey=%s Model=%s Verbose=%t",
+		lang, mode, hk, c.ModelID, c.Verbose,
 	)
-}
-
-func envOrDefault(key, defaultVal string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return defaultVal
-}
-
-// NormalizeWhisperURL canonicalizes common equivalent forms so URL matching
-// logic (for local vs external server behavior) is predictable.
-func NormalizeWhisperURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return raw
-	}
-	if u.Hostname() == "localhost" {
-		hostPort := "127.0.0.1"
-		if p := u.Port(); p != "" {
-			hostPort = hostPort + ":" + p
-		}
-		u.Host = hostPort
-	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	return u.String()
-}
-
-// IsLocalWhisperURL reports whether Vox should manage whisper-server as an
-// embedded child process for this URL.
-func IsLocalWhisperURL(raw string) bool {
-	u, err := url.Parse(NormalizeWhisperURL(raw))
-	if err != nil {
-		return false
-	}
-	if u.Scheme != "http" {
-		return false
-	}
-	host := u.Hostname()
-	if host != "127.0.0.1" && host != "localhost" {
-		return false
-	}
-	p, err := strconv.Atoi(u.Port())
-	return err == nil && p == 2022
 }
 
 func parseBool(raw string, defaultVal bool) bool {

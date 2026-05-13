@@ -138,45 +138,39 @@ func run() {
 		os.Exit(1)
 	}
 
-	// Check Whisper server.
-	whisperClient := transcribe.NewClient(cfg.WhisperURL)
-	var whisperSrv *whisperserver.Server
+	// Resolve selected whisper model + start the embedded whisper-server child.
 	selectedModel, ok := whispermodel.ByID(cfg.ModelID)
 	if !ok {
 		selectedModel, _ = whispermodel.ByID(whispermodel.DefaultID)
 	}
-	if cfg.ManageWhisperServer {
-		if !whispermodel.IsInstalled(selectedModel) {
-			fmt.Printf("Selected model %q is not installed, downloading...\n", selectedModel.ID)
-			if err := whispermodel.Download(ctx, selectedModel, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "Error downloading model %q: %v\n", selectedModel.ID, err)
-				os.Exit(1)
-			}
-		}
-		logPath := whisperLogPath()
-		var err error
-		whisperSrv, err = whisperserver.New("127.0.0.1", 2022, logPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	if !whispermodel.IsInstalled(selectedModel) {
+		fmt.Printf("Selected model %q is not installed, downloading...\n", selectedModel.ID)
+		if err := whispermodel.Download(ctx, selectedModel, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "Error downloading model %q: %v\n", selectedModel.ID, err)
 			os.Exit(1)
 		}
-		modelPath, err := whispermodel.Path(selectedModel)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		if err := whisperSrv.Start(ctx, modelPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Error starting whisper-server: %v\n", err)
-			os.Exit(1)
-		}
-		whisperClient = transcribe.NewClient(whisperSrv.URL())
 	}
+	whisperSrv, err := whisperserver.New("127.0.0.1", 2022, whisperLogPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	modelPath, err := whispermodel.Path(selectedModel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := whisperSrv.Start(ctx, modelPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting whisper-server: %v\n", err)
+		os.Exit(1)
+	}
+	whisperClient := transcribe.NewClient(whisperSrv.URL())
 	if err := whisperClient.HealthCheck(ctx); err != nil {
-		fmt.Printf("Warning: Whisper server unavailable at %s (%v)\n", cfg.WhisperURL, err)
+		fmt.Printf("Warning: Whisper server unavailable at %s (%v)\n", whisperSrv.URL(), err)
 		fmt.Println("  Transcription will fail until the server is reachable.")
 		fmt.Println()
 	} else if cfg.Verbose {
-		logger.Debug("whisper health check passed", "url", cfg.WhisperURL)
+		logger.Debug("whisper health check passed", "url", whisperSrv.URL())
 	}
 
 	// Clean up any orphaned temp files from prior crashes in the background.
@@ -246,7 +240,6 @@ func run() {
 	ui.SetState(ui.StateIdle)
 	ui.SetHotkeyPresets(hotkeyPresets, cfg.Hotkey)
 	ui.SetModelPresets(buildModelPresets(), selectedModel.ID)
-	ui.SetModelMenuEnabled(cfg.ManageWhisperServer)
 	ui.SetMode(cfg.HoldToTalk)
 	ui.SetSoundsEnabled(cfg.SoundsEnabled)
 	ui.SetAutoPaste(cfg.AutoPaste)
@@ -303,9 +296,7 @@ func run() {
 	go showLogWatcher(ctx, logger)
 	go hotkeyChangeWatcher(ctx, logger, listener)
 	go settingsWatcher(ctx, logger, recorder)
-	if whisperSrv != nil {
-		go modelChangeWatcher(ctx, logger, whisperClient, whisperSrv)
-	}
+	go modelChangeWatcher(ctx, logger, whisperClient, whisperSrv)
 	go runEventLoop(ctx, cfg, logger, listener, recorder, pipe)
 
 	// Run NSApp's main loop on the main goroutine. Returns when the user
@@ -323,10 +314,8 @@ func shutdownWatcher(cancel context.CancelFunc, logger *slog.Logger, recorder *a
 	}
 	cancel() // signal all watcher goroutines to stop
 	cleanup(logger, recorder)
-	if whisperSrv != nil {
-		if err := whisperSrv.Stop(context.Background()); err != nil {
-			logger.Warn("stop whisper-server", "error", err)
-		}
+	if err := whisperSrv.Stop(context.Background()); err != nil {
+		logger.Warn("stop whisper-server", "error", err)
 	}
 	if p := os.Getenv("VOX_LOG_PATH"); p != "" {
 		_ = os.Remove(p)
