@@ -89,6 +89,8 @@ var commandPrefixes = []struct {
 	{"create ticket", "create-ticket"},
 	{"create a jira", "create-ticket"},
 	{"create jira", "create-ticket"},
+	{"commit all with message ", "git-commit-all"},
+	{"commit all ", "git-commit-all"},
 	{"commit with message ", "git-commit"},
 	{"git commit ", "git-commit"},
 	{"git status", "git-status"},

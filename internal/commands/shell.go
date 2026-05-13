@@ -138,6 +138,13 @@ func DefaultCommands() []Command {
 			return "echo", []string{fmt.Sprintf("[TODO] Create Jira ticket: %s", summary)}
 		}),
 
+		NewShellCommand("git-commit-all", []string{"git-commit-all"}, func(args string) (string, []string) {
+			if args == "" {
+				return "echo", []string{"usage: commit all with message <message>"}
+			}
+			return "git", []string{"commit", "-am", args}
+		}),
+
 		NewShellCommand("git-commit", []string{"git-commit"}, func(args string) (string, []string) {
 			if args == "" {
 				return "echo", []string{"usage: commit with message <message>"}

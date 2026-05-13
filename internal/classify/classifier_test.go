@@ -68,6 +68,8 @@ func TestClassifyCommandMode(t *testing.T) {
 		{"query flag", "query flag enable-new-checkout", "query-flag", "enable-new-checkout"},
 		{"check flag", "check flag dark-mode", "query-flag", "dark-mode"},
 		{"flag status", "flag status my-feature", "query-flag", "my-feature"},
+		{"commit all with message", "commit all with message fix everything", "git-commit-all", "fix everything"},
+		{"commit all", "commit all updated readme", "git-commit-all", "updated readme"},
 		{"commit with message", "commit with message fix the login bug", "git-commit", "fix the login bug"},
 		{"git commit", "git commit updated readme", "git-commit", "updated readme"},
 		{"git status", "git status", "git-status", ""},

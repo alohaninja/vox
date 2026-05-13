@@ -65,7 +65,7 @@ func TestDefaultCommandsRegistered(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	expected := []string{"create-pr", "list-issues", "query-flag", "create-ticket", "open-url", "git-commit", "git-status", "git-diff", "git-push", "git-pull", "run-tests"}
+	expected := []string{"create-pr", "list-issues", "query-flag", "create-ticket", "open-url", "git-commit-all", "git-commit", "git-status", "git-diff", "git-push", "git-pull", "run-tests"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing default command: %s", name)
@@ -77,7 +77,7 @@ func TestDefaultCommandsMatch(t *testing.T) {
 	cmds := DefaultCommands()
 	r := NewRegistry(cmds...)
 
-	actions := []string{"create-pr", "list-issues", "query-flag", "create-ticket", "open-url", "git-commit", "git-status", "git-diff", "git-push", "git-pull", "run-tests"}
+	actions := []string{"create-pr", "list-issues", "query-flag", "create-ticket", "open-url", "git-commit-all", "git-commit", "git-status", "git-diff", "git-push", "git-pull", "run-tests"}
 	for _, action := range actions {
 		found := false
 		for _, cmd := range r.commands {
@@ -159,6 +159,41 @@ func TestOpenURLRejectsCustomSchemes(t *testing.T) {
 		}
 		if !strings.Contains(result, "refused to open") {
 			t.Errorf("expected refusal for %q, got %q", scheme, result)
+		}
+	}
+}
+
+func TestGitCommitAllNoArgs(t *testing.T) {
+	cmds := DefaultCommands()
+	r := NewRegistry(cmds...)
+
+	result, err := r.Execute(context.Background(), "git-commit-all", "")
+	if err != nil {
+		t.Fatalf("empty args should use echo path: %v", err)
+	}
+	if !strings.Contains(result, "usage: commit all with message") {
+		t.Errorf("expected usage message, got %q", result)
+	}
+}
+
+func TestGitCommitAllUsesAM(t *testing.T) {
+	// Verify git-commit-all uses -am to auto-stage all tracked files.
+	cmd := findCommand(DefaultCommands(), "git-commit-all")
+	if cmd == nil {
+		t.Fatal("git-commit-all command not found")
+	}
+	sc := cmd.(*ShellCommand)
+	cmdName, cmdArgs := sc.builder("fix everything")
+	if cmdName != "git" {
+		t.Errorf("cmdName = %q, want git", cmdName)
+	}
+	want := []string{"commit", "-am", "fix everything"}
+	if len(cmdArgs) != len(want) {
+		t.Fatalf("cmdArgs = %v, want %v", cmdArgs, want)
+	}
+	for i := range want {
+		if cmdArgs[i] != want[i] {
+			t.Errorf("cmdArgs[%d] = %q, want %q", i, cmdArgs[i], want[i])
 		}
 	}
 }
