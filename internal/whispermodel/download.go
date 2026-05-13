@@ -18,6 +18,26 @@ import (
 
 var downloadLocks sync.Map // map[string]*sync.Mutex
 
+// maxDownloadBytes caps the response body to prevent a compromised CDN from
+// filling disk. Set to 2x the largest catalog model (~1.5 GiB) plus margin.
+const maxDownloadBytes = 4 * 1024 * 1024 * 1024 // 4 GiB
+
+// downloadHTTPClient is a dedicated client with a generous but finite timeout
+// for model downloads. Using http.DefaultClient risks no timeout and inherits
+// application-global transport changes.
+var downloadHTTPClient = &http.Client{
+	Timeout: 30 * time.Minute, // large models on slow connections
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("refusing non-HTTPS redirect to %s", req.URL)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
+	},
+}
+
 // Download fetches a model file to disk, verifies checksum, and atomically
 // installs it at the final destination path. Existing valid files are kept.
 func Download(ctx context.Context, m Model, onProgress func(downloaded, total int64)) error {
@@ -40,7 +60,7 @@ func Download(ctx context.Context, m Model, onProgress func(downloaded, total in
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := downloadHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("download model: %w", err)
 	}
@@ -54,7 +74,12 @@ func Download(ctx context.Context, m Model, onProgress func(downloaded, total in
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = f.Close()
+		}
+	}()
 	defer func() {
 		_ = os.Remove(tmp)
 	}()
@@ -68,8 +93,10 @@ func Download(ctx context.Context, m Model, onProgress func(downloaded, total in
 		total:    resp.ContentLength,
 		interval: 250 * time.Millisecond,
 	}
+	// Limit the response body to prevent unbounded disk writes.
+	limited := io.LimitReader(resp.Body, maxDownloadBytes)
 	w := io.MultiWriter(f, hasher, pw)
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	if _, err := io.Copy(w, limited); err != nil {
 		return fmt.Errorf("write model file: %w", err)
 	}
 	pw.flush()
@@ -84,6 +111,7 @@ func Download(ctx context.Context, m Model, onProgress func(downloaded, total in
 	if err := f.Close(); err != nil {
 		return err
 	}
+	closed = true
 	if err := os.Rename(tmp, dest); err != nil {
 		return err
 	}

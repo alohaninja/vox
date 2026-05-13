@@ -21,13 +21,15 @@ type Model struct {
 	SizeMB   int
 }
 
+// All checksums are SHA-256, sourced from HuggingFace Git LFS pointers:
+// https://huggingface.co/ggerganov/whisper.cpp/tree/main
 var catalog = []Model{
 	{
 		ID:       "tiny.en",
 		Label:    "Tiny (English, ~75 MiB)",
 		Filename: "ggml-tiny.en.bin",
 		URL:      "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
-		Checksum: "c78c86eb1a8faa21b369bcd33207cc90d64ae9df",
+		Checksum: "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
 		SizeMB:   75,
 	},
 	{
@@ -43,7 +45,7 @@ var catalog = []Model{
 		Label:    "Small (English, ~466 MiB)",
 		Filename: "ggml-small.en.bin",
 		URL:      "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin",
-		Checksum: "db8a495a91d927739e50b3fc1cc4c6b8f6c2d022",
+		Checksum: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
 		SizeMB:   466,
 	},
 	{
@@ -51,7 +53,7 @@ var catalog = []Model{
 		Label:    "Medium (English, ~1.5 GiB)",
 		Filename: "ggml-medium.en.bin",
 		URL:      "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin",
-		Checksum: "8c30f0e44ce9560643ebd10bbe50cd20eafd3723",
+		Checksum: "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
 		SizeMB:   1536,
 	},
 	{
@@ -59,7 +61,7 @@ var catalog = []Model{
 		Label:    "Large v3 Turbo (Multilingual, ~1.5 GiB)",
 		Filename: "ggml-large-v3-turbo.bin",
 		URL:      "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
-		Checksum: "4af2b29d7ec73d781377bfd1758ca957a807e941",
+		Checksum: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
 		SizeMB:   1536,
 	},
 }

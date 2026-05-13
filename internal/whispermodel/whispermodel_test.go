@@ -2,7 +2,7 @@ package whispermodel
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +44,7 @@ func TestPathAndIsInstalled(t *testing.T) {
 func TestDownloadSuccess(t *testing.T) {
 	t.Setenv("WHISPER_MODEL_DIR", t.TempDir())
 	payload := []byte("vox-test-model")
-	sum := sha1.Sum(payload)
+	sum := sha256.Sum256(payload)
 	checksum := hex.EncodeToString(sum[:])
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -93,7 +93,7 @@ func TestDownloadChecksumMismatch(t *testing.T) {
 		ID:       "test",
 		Filename: "ggml-test.bin",
 		URL:      srv.URL,
-		Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Checksum: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	}
 	err := Download(context.Background(), m, nil)
 	if err == nil {
@@ -126,7 +126,7 @@ func TestModelDirDefault(t *testing.T) {
 func TestDownloadConcurrentSameModelIsSerialized(t *testing.T) {
 	t.Setenv("WHISPER_MODEL_DIR", t.TempDir())
 	payload := []byte("vox-concurrent-model")
-	sum := sha1.Sum(payload)
+	sum := sha256.Sum256(payload)
 	checksum := hex.EncodeToString(sum[:])
 
 	var requests atomic.Int32

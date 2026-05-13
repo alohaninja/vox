@@ -443,6 +443,9 @@ func modelChangeWatcher(ctx context.Context, logger *slog.Logger, client *transc
 			ui.SetStatusLine(fmt.Sprintf("Status: Switching to %s…", model.ID))
 			processMu.Lock()
 			switchErr := whisperSrv.Switch(ctx, path)
+			if switchErr == nil {
+				client.ResetEndpoint()
+			}
 			processMu.Unlock()
 			if switchErr != nil {
 				logger.Warn("switch whisper model", "id", model.ID, "error", switchErr)
@@ -451,7 +454,6 @@ func modelChangeWatcher(ctx context.Context, logger *slog.Logger, client *transc
 				continue
 			}
 
-			client.ResetEndpoint()
 			ui.SetModelCheckmark(model.ID)
 			ui.SetModelPresets(buildModelPresets(), model.ID)
 			ui.SetStatusLine("Status: Idle")

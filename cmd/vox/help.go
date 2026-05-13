@@ -17,7 +17,6 @@ func runHelp() {
 	fmt.Println("  VOX_HOLD_TO_TALK    Hold-to-talk mode (default: true)")
 	fmt.Println("  VOX_LANGUAGE        Language code (default: auto-detect)")
 	fmt.Println("  VOX_VERBOSE         Debug logging (default: false)")
-	fmt.Println("  WHISPER_URL         Whisper server URL (default: http://127.0.0.1:2022)")
 	fmt.Println("  VOX_WHISPER_MODEL_ID Initial model ID (default: base.en)")
 	fmt.Println()
 	fmt.Println("Quick Start:")

@@ -69,7 +69,7 @@ func (s *Server) Start(ctx context.Context, modelPath string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("whisper-server already running")
 	}
-	cmd, done, lf, err := s.startLocked(ctx, modelPath)
+	cmd, done, lf, err := s.startLocked(modelPath)
 	if err != nil {
 		s.mu.Unlock()
 		return err
@@ -87,12 +87,26 @@ func (s *Server) Start(ctx context.Context, modelPath string) error {
 	return nil
 }
 
-// Switch restarts whisper-server using a new model path.
+// Switch restarts whisper-server using a new model path. If Start fails
+// after Stop, it attempts to roll back to the previous model so the server
+// is not left in a permanently stopped state.
 func (s *Server) Switch(ctx context.Context, modelPath string) error {
+	prevModel := s.CurrentModel()
 	if err := s.Stop(ctx); err != nil {
 		return err
 	}
-	return s.Start(ctx, modelPath)
+	if err := s.Start(ctx, modelPath); err != nil {
+		// Rollback: try to restart with the previous model so the server
+		// isn't left dead. If rollback also fails, return the original error.
+		if prevModel != "" {
+			if rbErr := s.Start(context.Background(), prevModel); rbErr != nil {
+				return fmt.Errorf("switch to %s failed: %w (rollback to %s also failed: %v)", modelPath, err, prevModel, rbErr)
+			}
+			return fmt.Errorf("switch to %s failed (rolled back to previous model): %w", modelPath, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // Stop gracefully stops whisper-server if it is running.
@@ -111,8 +125,19 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.model = ""
 	s.mu.Unlock()
 
+	// Always drain the done channel and close the log file, regardless of
+	// which error path we take below.
+	defer func() {
+		if lf != nil {
+			_ = lf.Close()
+		}
+	}()
+
 	pid := cmd.Process.Pid
 	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		// SIGTERM failed unexpectedly — still drain the child.
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		<-done
 		return err
 	}
 
@@ -124,13 +149,14 @@ func (s *Server) Stop(ctx context.Context) error {
 		<-done
 	case <-done:
 	}
-	if lf != nil {
-		_ = lf.Close()
-	}
 	return nil
 }
 
-func (s *Server) startLocked(ctx context.Context, modelPath string) (*exec.Cmd, chan error, *os.File, error) {
+// startLocked spawns the whisper-server child process. It does NOT use
+// exec.CommandContext so that the parent context cancellation cannot
+// race with the explicit Stop() lifecycle. The process is managed
+// entirely through Stop() which sends SIGTERM to the process group.
+func (s *Server) startLocked(modelPath string) (*exec.Cmd, chan error, *os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(s.logPath), 0o755); err != nil {
 		return nil, nil, nil, err
 	}
@@ -143,7 +169,7 @@ func (s *Server) startLocked(ctx context.Context, modelPath string) (*exec.Cmd, 
 		"--port", strconv.Itoa(s.port),
 		"--model", modelPath,
 	}
-	cmd := exec.CommandContext(ctx, s.binPath, args...)
+	cmd := exec.Command(s.binPath, args...)
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
