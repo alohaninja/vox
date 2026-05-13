@@ -20,6 +20,7 @@ type Prefs struct {
 	HoldToTalk    *bool  `json:"hold_to_talk,omitempty"`
 	SoundsEnabled *bool  `json:"sounds_enabled,omitempty"`
 	AutoPaste     *bool  `json:"auto_paste,omitempty"`
+	Model         string `json:"model,omitempty"`
 }
 
 // BoolPtr is a small helper for callers building Prefs literals.
