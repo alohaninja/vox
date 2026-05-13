@@ -28,6 +28,7 @@ func TestHelpOutput(t *testing.T) {
 		"VOX_LANGUAGE",
 		"VOX_VERBOSE",
 		"WHISPER_URL",
+		"VOX_WHISPER_MODEL_ID",
 		"Quick Start",
 		"make setup",
 		"make start",

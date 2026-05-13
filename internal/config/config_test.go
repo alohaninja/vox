@@ -33,6 +33,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Hotkey != "option+space" {
 		t.Errorf("Hotkey = %q, want %q", cfg.Hotkey, "option+space")
 	}
+	if cfg.ModelID != "base.en" {
+		t.Errorf("ModelID = %q, want %q", cfg.ModelID, "base.en")
+	}
+	if !cfg.ManageWhisperServer {
+		t.Error("ManageWhisperServer = false, want true")
+	}
 }
 
 func TestLoadFromEnv(t *testing.T) {
@@ -41,6 +47,7 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("VOX_HOLD_TO_TALK", "false")
 	t.Setenv("VOX_VERBOSE", "true")
 	t.Setenv("VOX_HOTKEY", "cmd+shift")
+	t.Setenv("VOX_WHISPER_MODEL_ID", "small.en")
 
 	cfg := Load()
 
@@ -55,6 +62,38 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 	if !cfg.Verbose {
 		t.Error("Verbose = false, want true")
+	}
+	if cfg.ModelID != "small.en" {
+		t.Errorf("ModelID = %q, want %q", cfg.ModelID, "small.en")
+	}
+	if cfg.ManageWhisperServer {
+		t.Error("ManageWhisperServer = true, want false for non-local URL")
+	}
+}
+
+func TestNormalizeWhisperURL(t *testing.T) {
+	got := NormalizeWhisperURL("http://localhost:2022/")
+	want := "http://127.0.0.1:2022"
+	if got != want {
+		t.Fatalf("NormalizeWhisperURL() = %q, want %q", got, want)
+	}
+}
+
+func TestIsLocalWhisperURL(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"http://127.0.0.1:2022", true},
+		{"http://localhost:2022/", true},
+		{"http://127.0.0.1:9999", false},
+		{"https://127.0.0.1:2022", false},
+		{"http://example.com:2022", false},
+	}
+	for _, tt := range tests {
+		if got := IsLocalWhisperURL(tt.url); got != tt.want {
+			t.Errorf("IsLocalWhisperURL(%q) = %t, want %t", tt.url, got, tt.want)
+		}
 	}
 }
 
