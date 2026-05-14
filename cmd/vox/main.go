@@ -112,6 +112,15 @@ func run() {
 		logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	}
 
+	// Ensure only one instance of vox is running.
+	lockFile, err := acquireLock()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error: vox is already running.")
+		fmt.Fprintln(os.Stderr, "  Kill the other instance first, or run: make stop")
+		os.Exit(1)
+	}
+	defer lockFile.Close()
+
 	// Load user config file (~/.vox/config.yaml).
 	userCfg, err := userconfig.Load()
 	if err != nil {
@@ -921,6 +930,36 @@ func isBlankAudio(text string) bool {
 	t := strings.ToLower(strings.TrimSpace(text))
 	t = strings.Trim(t, "[]() ")
 	return t == "blank audio" || t == "blank_audio"
+}
+
+// acquireLock attempts to acquire an exclusive lock on ~/.vox/vox.lock.
+// Returns the open file (caller must defer Close) or an error if another
+// instance holds the lock. The lock is released automatically when the
+// process exits, even on crash or SIGKILL.
+func acquireLock() (*os.File, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	lockPath := filepath.Join(home, ".vox", "vox.lock")
+
+	// Ensure ~/.vox/ exists.
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
+		return nil, err
+	}
+
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+
+	// Try non-blocking exclusive lock.
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	return f, nil
 }
 
 func cleanup(logger *slog.Logger, recorder *audio.Recorder) {
