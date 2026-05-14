@@ -73,6 +73,10 @@ var processMu sync.Mutex
 // whisper-server so removing a model can switch away from the active file first.
 var currentWhisperModelID atomic.Value // string
 
+// modelMu serializes model-change and model-delete operations so they cannot
+// interleave (e.g. switching to a model while a delete is mid-fallback).
+var modelMu sync.Mutex
+
 func main() {
 	mainthread.Init(run)
 }
@@ -405,6 +409,7 @@ func activateWhisperModel(ctx context.Context, whisperClient *transcribe.Client,
 }
 
 func pickFallbackModel(excludeID string) (whispermodel.Model, error) {
+	// Prefer any installed model that isn't the one being excluded.
 	for _, m := range whispermodel.All() {
 		if m.ID == excludeID {
 			continue
@@ -413,19 +418,9 @@ func pickFallbackModel(excludeID string) (whispermodel.Model, error) {
 			return m, nil
 		}
 	}
-	def, ok := whispermodel.ByID(whispermodel.DefaultID)
-	if !ok {
-		return whispermodel.Model{}, fmt.Errorf("no fallback model in catalog")
-	}
-	if def.ID != excludeID {
-		return def, nil
-	}
-	for _, m := range whispermodel.All() {
-		if m.ID != excludeID {
-			return m, nil
-		}
-	}
-	return whispermodel.Model{}, fmt.Errorf("no fallback model")
+	// No installed fallback found — return an error rather than silently
+	// triggering a download for a non-installed model.
+	return whispermodel.Model{}, fmt.Errorf("no installed fallback model (excluding %s)", excludeID)
 }
 
 func whisperLogPath() string {
@@ -495,9 +490,11 @@ func modelChangeWatcher(ctx context.Context, logger *slog.Logger, client *transc
 		case <-ctx.Done():
 			return
 		case modelID := <-ui.OnModelChange():
+			modelMu.Lock()
 			model, ok := whispermodel.ByID(modelID)
 			if !ok {
 				logger.Warn("unknown model selected", "id", modelID)
+				modelMu.Unlock()
 				continue
 			}
 
@@ -509,6 +506,7 @@ func modelChangeWatcher(ctx context.Context, logger *slog.Logger, client *transc
 				ui.SetStatusLine("Status: Idle")
 				ui.SetModelMenuEnabled(true)
 				refreshModelMenus()
+				modelMu.Unlock()
 				continue
 			}
 
@@ -520,6 +518,7 @@ func modelChangeWatcher(ctx context.Context, logger *slog.Logger, client *transc
 				logger.Warn("save prefs", "field", "model", "error", err)
 			}
 			fmt.Printf("Model changed to %s\n", model.Label)
+			modelMu.Unlock()
 		}
 	}
 }
@@ -530,14 +529,17 @@ func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, whisperClient 
 		case <-ctx.Done():
 			return
 		case modelID := <-ui.OnModelDelete():
+			modelMu.Lock()
 			model, ok := whispermodel.ByID(modelID)
 			if !ok || !whispermodel.IsInstalled(model) {
+				modelMu.Unlock()
 				continue
 			}
 			if whispermodel.InstalledCount() <= 1 {
 				logger.Info("refusing remove: last downloaded model", "id", modelID)
 				ui.SetStatusLine("Status: Idle")
 				fmt.Printf("Can't remove your only downloaded model.\n")
+				modelMu.Unlock()
 				continue
 			}
 
@@ -551,6 +553,7 @@ func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, whisperClient 
 					logger.Warn("delete active model: no fallback", "id", modelID, "error", err)
 					ui.SetStatusLine("Status: Idle")
 					ui.SetModelMenuEnabled(true)
+					modelMu.Unlock()
 					continue
 				}
 				if err := activateWhisperModel(ctx, whisperClient, whisperSrv, fallback); err != nil {
@@ -558,6 +561,7 @@ func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, whisperClient 
 					ui.SetStatusLine("Status: Idle")
 					ui.SetModelMenuEnabled(true)
 					refreshModelMenus()
+					modelMu.Unlock()
 					continue
 				}
 				currentWhisperModelID.Store(fallback.ID)
@@ -568,6 +572,7 @@ func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, whisperClient 
 
 			if err := whispermodel.Remove(model); err != nil {
 				logger.Warn("remove model file", "id", model.ID, "error", err)
+				ui.SetStatusLine("Status: Remove failed")
 			} else {
 				fmt.Printf("Removed downloaded model: %s\n", model.Label)
 			}
@@ -575,6 +580,7 @@ func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, whisperClient 
 			refreshModelMenus()
 			ui.SetStatusLine("Status: Idle")
 			ui.SetModelMenuEnabled(true)
+			modelMu.Unlock()
 		}
 	}
 }

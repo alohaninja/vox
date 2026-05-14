@@ -415,9 +415,11 @@ void uiSetModelPresets(const char **ids, const char **labels, const int *install
 void uiSetModelRemovePresets(const char **ids, const char **labels, const int *removable, int count) {
     NSMutableArray<NSString *> *idArr = [NSMutableArray arrayWithCapacity:count];
     NSMutableArray<NSString *> *labelArr = [NSMutableArray arrayWithCapacity:count];
+    NSMutableArray<NSNumber *> *removableArr = [NSMutableArray arrayWithCapacity:count];
     for (int i = 0; i < count; i++) {
         [idArr addObject:[NSString stringWithUTF8String:ids[i]]];
         [labelArr addObject:[NSString stringWithUTF8String:labels[i]]];
+        [removableArr addObject:[NSNumber numberWithInt:(removable ? removable[i] : 1)]];
     }
     dispatch_async(dispatch_get_main_queue(), ^{
         if (modelRemoveMenu == nil) {
@@ -431,7 +433,7 @@ void uiSetModelRemovePresets(const char **ids, const char **labels, const int *r
         [sectionHeader setEnabled:NO];
         [modelRemoveMenu addItem:sectionHeader];
 
-        if (count == 0) {
+        if (idArr.count == 0) {
             NSMenuItem *none = [[NSMenuItem alloc] initWithTitle:@"No downloaded models"
                                                             action:nil
                                                      keyEquivalent:@""];
@@ -449,7 +451,7 @@ void uiSetModelRemovePresets(const char **ids, const char **labels, const int *r
             [item setTarget:appDelegate];
             [item setRepresentedObject:idArr[i]];
             [item setIndentationLevel:1];
-            BOOL canRemove = (removable == NULL) ? YES : (removable[i] != 0);
+            BOOL canRemove = [removableArr[i] boolValue];
             if (!canRemove) {
                 [item setEnabled:NO];
                 [item setAction:nil];
