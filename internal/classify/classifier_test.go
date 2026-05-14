@@ -2,6 +2,11 @@ package classify
 
 import "testing"
 
+// defaultClassifier returns a Classifier with built-in defaults for testing.
+func defaultClassifier() *Classifier {
+	return NewClassifier(DefaultCommandPrefixes())
+}
+
 func TestClassifyPromptMode(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -28,7 +33,7 @@ func TestClassifyPromptMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Classify(tt.input)
+			got := defaultClassifier().Classify(tt.input)
 			if got.Mode != tt.wantMode {
 				t.Errorf("Classify(%q).Mode = %v, want %v", tt.input, got.Mode, tt.wantMode)
 			}
@@ -92,7 +97,7 @@ func TestClassifyCommandMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Classify(tt.input)
+			got := defaultClassifier().Classify(tt.input)
 			if got.Mode != ModeCommand {
 				t.Errorf("Classify(%q).Mode = %v, want command", tt.input, got.Mode)
 			}
@@ -150,7 +155,7 @@ func TestClassifyDictation(t *testing.T) {
 
 	for _, input := range inputs {
 		t.Run(input, func(t *testing.T) {
-			got := Classify(input)
+			got := defaultClassifier().Classify(input)
 			if got.Mode != ModeDictation {
 				t.Errorf("Classify(%q) = %v (action=%q), want dictation", input, got.Mode, got.Action)
 			}
@@ -169,7 +174,7 @@ func TestClassifyCaseInsensitive(t *testing.T) {
 		{"Hey Vox do something", ModeCommand},
 	}
 	for _, tt := range tests {
-		got := Classify(tt.input)
+		got := defaultClassifier().Classify(tt.input)
 		if got.Mode != tt.want {
 			t.Errorf("Classify(%q).Mode = %v, want %v", tt.input, got.Mode, tt.want)
 		}
@@ -177,14 +182,14 @@ func TestClassifyCaseInsensitive(t *testing.T) {
 }
 
 func TestClassifyPreservesOriginalCase(t *testing.T) {
-	got := Classify("Summarize My Important Meeting Notes")
+	got := defaultClassifier().Classify("Summarize My Important Meeting Notes")
 	if got.RawArgs != "My Important Meeting Notes" {
 		t.Errorf("RawArgs = %q, want original case preserved", got.RawArgs)
 	}
 }
 
 func TestClassifyWhitespace(t *testing.T) {
-	got := Classify("  summarize my clipboard  ")
+	got := defaultClassifier().Classify("  summarize my clipboard  ")
 	if got.Mode != ModePrompt {
 		t.Errorf("leading/trailing whitespace should be trimmed; got mode %v", got.Mode)
 	}

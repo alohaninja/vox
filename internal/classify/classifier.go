@@ -182,10 +182,3 @@ func (cl *Classifier) Classify(text string) Intent {
 
 	return Intent{Mode: ModeDictation}
 }
-
-// Classify is a convenience function using default prefixes.
-// Deprecated: Use NewClassifier() and call Classify on the instance.
-func Classify(text string) Intent {
-	c := NewClassifier(DefaultCommandPrefixes())
-	return c.Classify(text)
-}
