@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"time"
 
 	"vox/internal/audio"
@@ -23,19 +24,20 @@ func runTest() {
 
 	passed, failed, skipped := 0, 0, 0
 
-	check := func(name string, fn func() (string, error)) {
+	check := func(name string, fn func() (string, error)) bool {
 		result, err := fn()
 		if err != nil {
 			fmt.Printf("  [FAIL] %s: %v\n", name, err)
 			failed++
-		} else {
-			if result != "" {
-				fmt.Printf("  [PASS] %s (%s)\n", name, result)
-			} else {
-				fmt.Printf("  [PASS] %s\n", name)
-			}
-			passed++
+			return false
 		}
+		if result != "" {
+			fmt.Printf("  [PASS] %s (%s)\n", name, result)
+		} else {
+			fmt.Printf("  [PASS] %s\n", name)
+		}
+		passed++
+		return true
 	}
 
 	skip := func(name, reason string) {
@@ -44,7 +46,7 @@ func runTest() {
 	}
 
 	// 1. Permissions
-	fmt.Println("[1/4] Permissions")
+	fmt.Println("[1/5] Permissions")
 	check("Accessibility", func() (string, error) {
 		if !hotkey.CheckAccessibility() {
 			return "", fmt.Errorf("not granted -- System Settings > Privacy > Accessibility")
@@ -60,7 +62,7 @@ func runTest() {
 	fmt.Println()
 
 	// 2. Dependencies
-	fmt.Println("[2/4] Dependencies")
+	fmt.Println("[2/5] Dependencies")
 	check("Recording tool", func() (string, error) {
 		if _, err := exec.LookPath("rec"); err == nil {
 			return "sox (rec)", nil
@@ -79,18 +81,20 @@ func runTest() {
 	fmt.Println()
 
 	// 3. Connectivity
-	fmt.Println("[3/4] Connectivity")
+	fmt.Println("[3/5] Connectivity")
 	whisperURL := os.Getenv("WHISPER_URL")
-	if whisperURL == "" {
-		whisperURL = "http://127.0.0.1:2022"
-	}
+	// NewClient defaults to http://127.0.0.1:2022 when given an empty string.
 	client := transcribe.NewClient(whisperURL)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	if whisperURL == "" {
+		whisperURL = "http://127.0.0.1:2022" // for display only
+	}
+
+	healthCtx, healthCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer healthCancel()
 
 	whisperOK := false
 	check("Whisper server reachable", func() (string, error) {
-		if err := client.HealthCheck(ctx); err != nil {
+		if err := client.HealthCheck(healthCtx); err != nil {
 			return "", fmt.Errorf("%s unreachable -- is whisper-server running? (make start)", whisperURL)
 		}
 		whisperOK = true
@@ -99,7 +103,7 @@ func runTest() {
 
 	// 4. Recording + transcription (only if whisper is up)
 	fmt.Println()
-	fmt.Println("[4/4] Recording & Transcription")
+	fmt.Println("[4/5] Recording & Transcription")
 	if !whisperOK {
 		skip("Test recording", "whisper server not reachable")
 		skip("Transcription", "whisper server not reachable")
@@ -109,11 +113,21 @@ func runTest() {
 			skip("Test recording", fmt.Sprintf("no recorder: %v", err))
 			skip("Transcription", "no recorder")
 		} else {
-			check("Test recording (1s)", func() (string, error) {
+			// Ensure the recording subprocess is cleaned up on interrupt.
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, os.Interrupt)
+			defer func() {
+				signal.Stop(sigCh)
+				if recorder.IsRecording() {
+					_, _ = recorder.Stop()
+				}
+			}()
+
+			recordOK := check("Test recording (2s)", func() (string, error) {
 				if err := recorder.Start(); err != nil {
 					return "", fmt.Errorf("start failed: %w", err)
 				}
-				time.Sleep(1200 * time.Millisecond)
+				time.Sleep(2 * time.Second)
 				data, err := recorder.Stop()
 				if err != nil {
 					return "", fmt.Errorf("stop failed: %w", err)
@@ -121,25 +135,33 @@ func runTest() {
 				return fmt.Sprintf("%d bytes", len(data)), nil
 			})
 
-			// Quick transcription test with a fresh 1s recording.
-			check("Transcription", func() (string, error) {
-				if err := recorder.Start(); err != nil {
-					return "", fmt.Errorf("start failed: %w", err)
-				}
-				time.Sleep(1200 * time.Millisecond)
-				data, err := recorder.Stop()
-				if err != nil {
-					return "", fmt.Errorf("stop failed: %w", err)
-				}
-				text, err := client.Transcribe(ctx, data, transcribe.TranscribeOptions{})
-				if err != nil {
-					return "", fmt.Errorf("transcribe failed: %w", err)
-				}
-				if text == "" {
-					return "(silence detected)", nil
-				}
-				return fmt.Sprintf("%q", text), nil
-			})
+			// Only attempt transcription if recording succeeded.
+			if !recordOK {
+				skip("Transcription", "test recording failed")
+			} else {
+				// Use a generous timeout for the recording + transcription round-trip.
+				transcribeCtx, transcribeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer transcribeCancel()
+
+				check("Transcription", func() (string, error) {
+					if err := recorder.Start(); err != nil {
+						return "", fmt.Errorf("start failed: %w", err)
+					}
+					time.Sleep(2 * time.Second)
+					data, err := recorder.Stop()
+					if err != nil {
+						return "", fmt.Errorf("stop failed: %w", err)
+					}
+					text, err := client.Transcribe(transcribeCtx, data, transcribe.TranscribeOptions{})
+					if err != nil {
+						return "", fmt.Errorf("transcribe failed: %w", err)
+					}
+					if text == "" {
+						return "(silence detected)", nil
+					}
+					return fmt.Sprintf("%q", text), nil
+				})
+			}
 		}
 	}
 
