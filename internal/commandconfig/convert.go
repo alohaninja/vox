@@ -16,16 +16,19 @@ func ToCommand(def CommandDef) commands.Command {
 		copy(cmdArgs, def.Args)
 
 		if def.ForwardArgs && args != "" {
+			tokens := strings.Fields(args)
 			if def.RequireDotSlash {
-				if !strings.HasPrefix(args, "./") || strings.Contains(args, "..") {
-					usage := fmt.Sprintf("usage: args must start with ./ and cannot contain .. (got %q)", args)
-					if def.Usage != "" {
-						usage = def.Usage
+				for _, tok := range tokens {
+					if !strings.HasPrefix(tok, "./") || strings.Contains(tok, "..") {
+						usage := fmt.Sprintf("usage: each arg must start with ./ and cannot contain .. (got %q)", tok)
+						if def.Usage != "" {
+							usage = def.Usage
+						}
+						return "echo", []string{usage}
 					}
-					return "echo", []string{usage}
 				}
 			}
-			cmdArgs = append(cmdArgs, strings.Fields(args)...)
+			cmdArgs = append(cmdArgs, tokens...)
 		} else if def.ForwardArgs && args == "" && def.Usage != "" {
 			return "echo", []string{def.Usage}
 		}
@@ -70,11 +73,11 @@ func Merge(builtins []commands.Command, userDefs []CommandDef) ([]commands.Comma
 		}
 	}
 
-	// Add user-defined prefixes
+	// Add user-defined prefixes (lowercased — classifier lowercases input before matching)
 	for _, d := range userDefs {
 		for _, trigger := range d.Triggers {
 			prefixes = append(prefixes, classify.PrefixEntry{
-				Prefix: trigger,
+				Prefix: strings.ToLower(trigger),
 				Action: d.Name,
 			})
 		}

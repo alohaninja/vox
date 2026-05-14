@@ -21,6 +21,11 @@
 #   create-pr, list-issues, query-flag, create-ticket,
 #   git-commit-all, git-commit, git-status, git-diff,
 #   git-push, git-pull, run-tests, open-url
+#
+# Note: Trigger phrases are case-insensitive (lowercased before matching).
+# Prompt prefixes (summarize, explain, rewrite, translate, fix grammar,
+# proofread) always take priority over command triggers — avoid using
+# those words at the start of your triggers.
 
 commands:
   # Example: deploy to staging

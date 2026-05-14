@@ -157,6 +157,69 @@ func TestToCommandRequireDotSlashRejectsNoDotSlash(t *testing.T) {
 	}
 }
 
+func TestToCommandRequireDotSlashRejectsSecondToken(t *testing.T) {
+	def := CommandDef{
+		Name:            "run",
+		Triggers:        []string{"run"},
+		Command:         "echo",
+		Args:            []string{"running"},
+		ForwardArgs:     true,
+		RequireDotSlash: true,
+	}
+
+	cmd := ToCommand(def)
+	// "./safe /etc/passwd" — first token is valid but second is not
+	out, err := cmd.Execute(context.Background(), "./safe /etc/passwd")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "must start with ./") {
+		t.Errorf("expected rejection of second token, got %q", out)
+	}
+}
+
+func TestMergeMixedCaseTriggers(t *testing.T) {
+	userDefs := []CommandDef{
+		{Name: "deploy", Triggers: []string{"Deploy To Staging"}, Command: "echo"},
+	}
+
+	_, prefixes := Merge(nil, userDefs)
+
+	// Trigger should be stored lowercased
+	found := false
+	for _, p := range prefixes {
+		if p.Prefix == "deploy to staging" && p.Action == "deploy" {
+			found = true
+		}
+		if p.Prefix == "Deploy To Staging" {
+			t.Errorf("trigger stored with original case %q, should be lowercased", p.Prefix)
+		}
+	}
+	if !found {
+		t.Error("expected lowercased trigger 'deploy to staging' in prefixes")
+	}
+}
+
+func TestMergeMixedCaseTriggersClassify(t *testing.T) {
+	userDefs := []CommandDef{
+		{Name: "deploy", Triggers: []string{"Deploy To Staging"}, Command: "echo"},
+	}
+
+	_, prefixes := Merge(nil, userDefs)
+	cl := classify.NewClassifier(prefixes)
+
+	// Should match regardless of input case
+	got := cl.Classify("deploy to staging")
+	if got.Mode != classify.ModeCommand || got.Action != "deploy" {
+		t.Errorf("expected command/deploy, got mode=%v action=%q", got.Mode, got.Action)
+	}
+
+	got = cl.Classify("Deploy To Staging")
+	if got.Mode != classify.ModeCommand || got.Action != "deploy" {
+		t.Errorf("expected command/deploy for mixed case input, got mode=%v action=%q", got.Mode, got.Action)
+	}
+}
+
 func TestMergeAdditive(t *testing.T) {
 	builtins := commands.DefaultCommands()
 	userDefs := []CommandDef{

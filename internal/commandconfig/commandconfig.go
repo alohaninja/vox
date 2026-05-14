@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -60,7 +61,8 @@ func Load(path string) ([]CommandDef, error) {
 // Validate checks that all command definitions have required fields
 // and that there are no duplicate names.
 func Validate(defs []CommandDef) error {
-	seen := make(map[string]bool, len(defs))
+	seenNames := make(map[string]bool, len(defs))
+	seenTriggers := make(map[string]string) // trigger -> owning command name
 	for i, d := range defs {
 		if d.Name == "" {
 			return fmt.Errorf("command %d: name is required", i)
@@ -69,17 +71,22 @@ func Validate(defs []CommandDef) error {
 			return fmt.Errorf("command %q: at least one trigger is required", d.Name)
 		}
 		for j, t := range d.Triggers {
-			if t == "" {
-				return fmt.Errorf("command %q: trigger %d is empty", d.Name, j)
+			if strings.TrimSpace(t) == "" {
+				return fmt.Errorf("command %q: trigger %d is empty or whitespace-only", d.Name, j)
 			}
+			lower := strings.ToLower(t)
+			if owner, ok := seenTriggers[lower]; ok {
+				return fmt.Errorf("command %q: trigger %q duplicates trigger in command %q", d.Name, t, owner)
+			}
+			seenTriggers[lower] = d.Name
 		}
 		if d.Command == "" {
 			return fmt.Errorf("command %q: command is required", d.Name)
 		}
-		if seen[d.Name] {
+		if seenNames[d.Name] {
 			return fmt.Errorf("command %q: duplicate name", d.Name)
 		}
-		seen[d.Name] = true
+		seenNames[d.Name] = true
 	}
 	return nil
 }

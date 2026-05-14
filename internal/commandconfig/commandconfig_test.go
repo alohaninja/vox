@@ -172,6 +172,46 @@ func TestValidateValid(t *testing.T) {
 	}
 }
 
+func TestValidateWhitespaceOnlyTrigger(t *testing.T) {
+	defs := []CommandDef{{
+		Name:     "foo",
+		Triggers: []string{"  "},
+		Command:  "echo",
+	}}
+	if err := Validate(defs); err == nil {
+		t.Fatal("expected error for whitespace-only trigger")
+	}
+}
+
+func TestValidateDuplicateTriggers(t *testing.T) {
+	defs := []CommandDef{
+		{Name: "foo", Triggers: []string{"do thing"}, Command: "echo"},
+		{Name: "bar", Triggers: []string{"do thing"}, Command: "echo"},
+	}
+	if err := Validate(defs); err == nil {
+		t.Fatal("expected error for duplicate triggers across commands")
+	}
+}
+
+func TestValidateDuplicateTriggersWithinCommand(t *testing.T) {
+	defs := []CommandDef{
+		{Name: "foo", Triggers: []string{"do thing", "do thing"}, Command: "echo"},
+	}
+	if err := Validate(defs); err == nil {
+		t.Fatal("expected error for duplicate triggers within same command")
+	}
+}
+
+func TestValidateDuplicateTriggersCaseInsensitive(t *testing.T) {
+	defs := []CommandDef{
+		{Name: "foo", Triggers: []string{"Deploy"}, Command: "echo"},
+		{Name: "bar", Triggers: []string{"deploy"}, Command: "echo"},
+	}
+	if err := Validate(defs); err == nil {
+		t.Fatal("expected error for case-insensitive duplicate triggers")
+	}
+}
+
 func TestDefaultPath(t *testing.T) {
 	p := DefaultPath()
 	if !filepath.IsAbs(p) {
