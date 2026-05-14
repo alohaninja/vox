@@ -21,6 +21,7 @@ import (
 	"vox/internal/audio"
 	"vox/internal/classify"
 	"vox/internal/claude"
+	"vox/internal/commandconfig"
 	"vox/internal/commands"
 	"vox/internal/config"
 	"vox/internal/flags"
@@ -223,8 +224,20 @@ func run() {
 		promptExec = prompt.NewExecutor(claudeClient, inject.ReadClipboard)
 	}
 
-	// Initialize voice command registry.
-	cmdRegistry := commands.NewRegistry(commands.DefaultCommands()...)
+	// Load user-defined voice commands (warn on error, don't fatal).
+	userDefs, loadErr := commandconfig.Load(commandconfig.DefaultPath())
+	if loadErr != nil {
+		slog.Warn("loading custom commands", "error", loadErr)
+	}
+
+	// Merge user commands with built-in defaults.
+	mergedCmds, mergedPrefixes := commandconfig.Merge(
+		commands.DefaultCommands(),
+		userDefs,
+	)
+
+	cmdRegistry := commands.NewRegistry(mergedCmds...)
+	classifier := classify.NewClassifier(mergedPrefixes)
 
 	// Build hotkey labels for display.
 	hotkeyLabel := triggerLabel(cfg.Triggers)
@@ -283,7 +296,7 @@ func run() {
 	pipe := pipeline.New(
 		transcribeStage(whisperClient, transcribeOpts),
 		filterBlankStage(),
-		classifyStage(flagClient),
+		classifyStage(classifier, flagClient),
 		postProcessStage(claudeClient, flagClient),
 		promptModeStage(promptExec, flagClient),
 		commandStage(cmdRegistry, flagClient),
@@ -796,13 +809,13 @@ func injectStage() pipeline.Stage {
 }
 
 // classifyStage determines if speech is dictation, a prompt, or a command.
-func classifyStage(fc *flags.Client) pipeline.Stage {
+func classifyStage(cl *classify.Classifier, fc *flags.Client) pipeline.Stage {
 	return func(_ context.Context, r *pipeline.Result) error {
 		// Only classify if prompt mode or voice commands are enabled.
 		if !fc.PromptMode() && !fc.VoiceCommands() {
 			return nil
 		}
-		intent := classify.Classify(r.RawText)
+		intent := cl.Classify(r.RawText)
 		switch intent.Mode {
 		case classify.ModePrompt:
 			if fc.PromptMode() {
