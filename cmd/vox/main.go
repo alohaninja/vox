@@ -896,9 +896,14 @@ func commandStage(reg *commands.Registry, fc *flags.Client) pipeline.Stage {
 		fmt.Printf("[command: %s] ", action)
 		result, err := reg.Execute(ctx, action, args)
 		if err != nil {
+			r.OutputText = fmt.Sprintf("%s: failed", action)
 			return fmt.Errorf("voice command (%s): %w", action, err)
 		}
-		r.OutputText = result
+		if result == "" {
+			r.OutputText = fmt.Sprintf("%s: OK", action)
+		} else {
+			r.OutputText = fmt.Sprintf("%s: %s", action, result)
+		}
 		return nil
 	}
 }
