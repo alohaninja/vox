@@ -265,6 +265,69 @@ func TestClassifierWordBoundaryCustom(t *testing.T) {
 	}
 }
 
+func TestClassifyCommandWithPunctuation(t *testing.T) {
+	cl := defaultClassifier()
+
+	// Whisper commonly appends punctuation -- these should still match commands
+	tests := []struct {
+		name       string
+		input      string
+		wantMode   Mode
+		wantAction string
+	}{
+		{"period", "git status.", ModeCommand, "git-status"},
+		{"exclamation", "git status!", ModeCommand, "git-status"},
+		{"question", "git status?", ModeCommand, "git-status"},
+		{"comma", "git status,", ModeCommand, "git-status"},
+		{"period with space", "run tests.", ModeCommand, "run-tests"},
+		{"no punctuation", "git status", ModeCommand, "git-status"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cl.Classify(tt.input)
+			if got.Mode != tt.wantMode {
+				t.Errorf("Classify(%q).Mode = %v, want %v", tt.input, got.Mode, tt.wantMode)
+			}
+			if got.Action != tt.wantAction {
+				t.Errorf("Classify(%q).Action = %q, want %q", tt.input, got.Action, tt.wantAction)
+			}
+		})
+	}
+}
+
+func TestClassifyCustomCommandWithPunctuation(t *testing.T) {
+	custom := []PrefixEntry{
+		{Prefix: "open gmail", Action: "open-gmail"},
+		{Prefix: "check email", Action: "open-gmail"},
+	}
+	cl := NewClassifier(custom)
+
+	tests := []struct {
+		input      string
+		wantMode   Mode
+		wantAction string
+	}{
+		{"open gmail", ModeCommand, "open-gmail"},
+		{"open gmail.", ModeCommand, "open-gmail"},
+		{"Open Gmail.", ModeCommand, "open-gmail"},
+		{"check email!", ModeCommand, "open-gmail"},
+		{"open gmailing list", ModeDictation, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := cl.Classify(tt.input)
+			if got.Mode != tt.wantMode {
+				t.Errorf("Classify(%q).Mode = %v, want %v", tt.input, got.Mode, tt.wantMode)
+			}
+			if got.Action != tt.wantAction {
+				t.Errorf("Classify(%q).Action = %q, want %q", tt.input, got.Action, tt.wantAction)
+			}
+		})
+	}
+}
+
 func TestModeString(t *testing.T) {
 	tests := []struct {
 		mode Mode

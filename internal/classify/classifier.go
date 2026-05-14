@@ -122,6 +122,14 @@ func DefaultCommandPrefixes() []PrefixEntry {
 	}
 }
 
+// isWordBoundary returns true if the character is a valid word boundary for
+// command prefix matching. Whisper often appends punctuation (period, comma,
+// exclamation, question mark) to transcribed text, so these count as boundaries
+// alongside spaces.
+func isWordBoundary(c byte) bool {
+	return c == ' ' || c == '.' || c == ',' || c == '!' || c == '?'
+}
+
 // Classifier performs intent classification with configurable command prefixes.
 type Classifier struct {
 	promptPrefixes  []PrefixEntry
@@ -168,7 +176,7 @@ func (cl *Classifier) Classify(text string) Intent {
 			rest := lower[len(c.Prefix):]
 			lastChar := c.Prefix[len(c.Prefix)-1]
 			needsBoundary := (lastChar >= 'a' && lastChar <= 'z') || (lastChar >= '0' && lastChar <= '9')
-			if needsBoundary && rest != "" && rest[0] != ' ' {
+			if needsBoundary && rest != "" && !isWordBoundary(rest[0]) {
 				continue
 			}
 			rawArgs := strings.TrimSpace(text[len(c.Prefix):])
