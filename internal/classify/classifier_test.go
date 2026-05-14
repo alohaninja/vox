@@ -199,6 +199,67 @@ func TestClassifyWhitespace(t *testing.T) {
 	}
 }
 
+func TestClassifierCustomPrefixes(t *testing.T) {
+	custom := []PrefixEntry{
+		{Prefix: "deploy to staging", Action: "deploy-staging", Subject: ""},
+		{Prefix: "deploy staging", Action: "deploy-staging", Subject: ""},
+		{Prefix: "run lint ", Action: "run-lint", Subject: ""},
+	}
+	cl := NewClassifier(custom)
+
+	tests := []struct {
+		name       string
+		input      string
+		wantMode   Mode
+		wantAction string
+		wantArgs   string
+	}{
+		{"custom exact match", "deploy to staging", ModeCommand, "deploy-staging", ""},
+		{"custom alt trigger", "deploy staging", ModeCommand, "deploy-staging", ""},
+		{"custom with args", "run lint ./src/", ModeCommand, "run-lint", "./src/"},
+		{"custom case insensitive", "Deploy To Staging", ModeCommand, "deploy-staging", ""},
+		{"non-match falls to dictation", "do something else", ModeDictation, "", ""},
+		{"prompt still works", "summarize my clipboard", ModePrompt, "summarize", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cl.Classify(tt.input)
+			if got.Mode != tt.wantMode {
+				t.Errorf("Classify(%q).Mode = %v, want %v", tt.input, got.Mode, tt.wantMode)
+			}
+			if got.Action != tt.wantAction {
+				t.Errorf("Classify(%q).Action = %q, want %q", tt.input, got.Action, tt.wantAction)
+			}
+			if got.RawArgs != tt.wantArgs {
+				t.Errorf("Classify(%q).RawArgs = %q, want %q", tt.input, got.RawArgs, tt.wantArgs)
+			}
+		})
+	}
+}
+
+func TestClassifierWordBoundaryCustom(t *testing.T) {
+	custom := []PrefixEntry{
+		{Prefix: "deploy", Action: "deploy", Subject: ""},
+	}
+	cl := NewClassifier(custom)
+
+	got := cl.Classify("deploy")
+	if got.Mode != ModeCommand {
+		t.Errorf("exact match 'deploy' should be command, got %v", got.Mode)
+	}
+
+	got = cl.Classify("deploy foo")
+	if got.Mode != ModeCommand {
+		t.Errorf("'deploy foo' should be command, got %v", got.Mode)
+	}
+
+	got = cl.Classify("deployment pipeline")
+	if got.Mode != ModeDictation {
+		t.Errorf("'deployment' should be dictation (word boundary), got %v (action=%q)", got.Mode, got.Action)
+	}
+}
+
 func TestModeString(t *testing.T) {
 	tests := []struct {
 		mode Mode

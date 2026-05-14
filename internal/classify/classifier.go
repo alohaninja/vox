@@ -122,34 +122,48 @@ func DefaultCommandPrefixes() []PrefixEntry {
 	}
 }
 
-// Classify determines whether the transcribed text is dictation, a prompt-mode
-// query, or a voice command. It uses fast prefix matching with no API calls.
-func Classify(text string) Intent {
+// Classifier performs intent classification with configurable command prefixes.
+type Classifier struct {
+	promptPrefixes  []PrefixEntry
+	commandPrefixes []PrefixEntry
+}
+
+// NewClassifier creates a Classifier with the given command prefixes.
+// Prompt prefixes use the built-in defaults.
+func NewClassifier(commandPrefixes []PrefixEntry) *Classifier {
+	// Convert internal promptPrefixes to PrefixEntry
+	pp := make([]PrefixEntry, len(promptPrefixes))
+	for i, p := range promptPrefixes {
+		pp[i] = PrefixEntry{Prefix: p.prefix, Action: p.action, Subject: p.subject}
+	}
+	return &Classifier{
+		promptPrefixes:  pp,
+		commandPrefixes: commandPrefixes,
+	}
+}
+
+// Classify determines whether text is dictation, a prompt query, or a command.
+func (cl *Classifier) Classify(text string) Intent {
 	text = strings.TrimSpace(text)
 	lower := strings.ToLower(text)
 
-	// Check prompt prefixes first (more common than commands).
-	for _, p := range promptPrefixes {
-		if strings.HasPrefix(lower, p.prefix) {
-			rawArgs := strings.TrimSpace(text[len(p.prefix):])
-			subject := p.subject
+	for _, p := range cl.promptPrefixes {
+		if strings.HasPrefix(lower, p.Prefix) {
+			rawArgs := strings.TrimSpace(text[len(p.Prefix):])
+			subject := p.Subject
 			if subject == "" && rawArgs != "" {
 				subject = rawArgs
 			}
 			return Intent{
 				Mode:    ModePrompt,
-				Action:  p.action,
+				Action:  p.Action,
 				Subject: subject,
 				RawArgs: rawArgs,
 			}
 		}
 	}
 
-	// Check command prefixes.
-	// Prefixes ending in a space or non-alphanumeric (like "://") pass through.
-	// Prefixes ending in a letter/digit require a word boundary (end-of-string
-	// or space) so "open a pr" doesn't match "open a presentation".
-	for _, c := range DefaultCommandPrefixes() {
+	for _, c := range cl.commandPrefixes {
 		if strings.HasPrefix(lower, c.Prefix) {
 			rest := lower[len(c.Prefix):]
 			lastChar := c.Prefix[len(c.Prefix)-1]
@@ -162,11 +176,16 @@ func Classify(text string) Intent {
 				Mode:    ModeCommand,
 				Action:  c.Action,
 				RawArgs: rawArgs,
-				// Subject intentionally empty for commands; callers use RawArgs directly.
 			}
 		}
 	}
 
-	// Default: treat as dictation.
 	return Intent{Mode: ModeDictation}
+}
+
+// Classify is a convenience function using default prefixes.
+// Deprecated: Use NewClassifier() and call Classify on the instance.
+func Classify(text string) Intent {
+	c := NewClassifier(DefaultCommandPrefixes())
+	return c.Classify(text)
 }
