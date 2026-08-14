@@ -80,7 +80,7 @@ make start
 
 `make start` handles everything:
 
-1. Installs missing system deps (`sox`, `whisper-cpp`) via Homebrew
+1. Installs missing system deps (`go`, `sox`, `whisper-cpp`) via Homebrew
 2. Downloads the default Whisper model (~150 MB) to `~/.local/share/whisper-cpp/`
 3. Builds `bin/Vox.app` and ad-hoc codesigns it
 4. Launches Vox detached — it manages `whisper-server` itself
