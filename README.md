@@ -70,7 +70,7 @@ Hold hotkey → Record mic → Whisper transcribes → Classify → [AI Process]
 
 ### Quick start (one command)
 
-Requirements: **macOS**, **Homebrew**, **Go 1.24+**
+Requirements: **macOS** and **Homebrew**. Everything else (`go`, `sox`, `whisper-cpp`) is installed automatically.
 
 ```bash
 git clone https://github.com/mattthewong/vox.git
@@ -90,7 +90,7 @@ The first launch triggers two macOS permission prompts (Microphone and Accessibi
 ### Manual setup
 
 ```bash
-brew install sox whisper-cpp
+brew install go sox whisper-cpp
 mkdir -p ~/.local/share/whisper-cpp
 curl -L -o ~/.local/share/whisper-cpp/ggml-base.en.bin \
   "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
