@@ -11,9 +11,9 @@ void *clipboardSnapshotCreate(void);
 int clipboardSnapshotRestore(void *snapshot);
 void clipboardSnapshotFree(void *snapshot);
 
-// Position of 'v' on a US QWERTY keyboard, used when the active layout
-// cannot be read.
-static const CGKeyCode usQwertyVKeycode = 9;
+// Returned in place of a keycode when the active keyboard layout cannot be
+// read, so callers post nothing rather than guessing at a physical key.
+#define pasteKeyUnknown (-1)
 
 // charInLayout returns the character a keycode produces in the given layout
 // while Command is held, or 0 if it produces no single character.
@@ -32,23 +32,24 @@ static UniChar charInLayout(const UCKeyboardLayout *layout, CGKeyCode keycode) {
 }
 
 // pasteKeycode returns the key that produces 'v' under the active keyboard
-// layout. Applications match Cmd+V by character rather than by keycode, and
-// layouts such as Dvorak put 'v' on a different physical key than QWERTY.
+// layout, or pasteKeyUnknown if that layout cannot be read. Applications match
+// Cmd+V by character rather than by keycode, and layouts such as Dvorak put 'v'
+// on a different physical key than QWERTY.
 // The lookup runs per paste so switching input sources takes effect at once.
-CGKeyCode pasteKeycode(void) {
+int pasteKeycode(void) {
     TISInputSourceRef src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
     if (src == NULL) {
-        return usQwertyVKeycode;
+        return pasteKeyUnknown;
     }
 
     CFDataRef data = (CFDataRef)TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData);
     if (data == NULL) {
         CFRelease(src);
-        return usQwertyVKeycode;
+        return pasteKeyUnknown;
     }
 
     const UCKeyboardLayout *layout = (const UCKeyboardLayout *)CFDataGetBytePtr(data);
-    CGKeyCode result = usQwertyVKeycode;
+    int result = pasteKeyUnknown;
     for (CGKeyCode keycode = 0; keycode < 128; keycode++) {
         if (charInLayout(layout, keycode) == 'v') {
             result = keycode;
@@ -74,14 +75,27 @@ UniChar charForPasteKeycode(void) {
         return 0;
     }
 
-    UniChar ch = charInLayout((const UCKeyboardLayout *)CFDataGetBytePtr(data), pasteKeycode());
+    int keycode = pasteKeycode();
+    if (keycode == pasteKeyUnknown) {
+        CFRelease(src);
+        return 0;
+    }
+
+    UniChar ch = charInLayout((const UCKeyboardLayout *)CFDataGetBytePtr(data), (CGKeyCode)keycode);
     CFRelease(src);
     return ch;
 }
 
-// simulateCmdV posts Cmd+V keyboard events to the system.
-void simulateCmdV(void) {
-    CGKeyCode v = pasteKeycode();
+// simulateCmdV posts Cmd+V keyboard events to the system. It returns 0 without
+// posting anything when the active keyboard layout cannot be read, since any
+// keycode picked blind would fire whatever unrelated shortcut sits there.
+int simulateCmdV(void) {
+    int keycode = pasteKeycode();
+    if (keycode == pasteKeyUnknown) {
+        return 0;
+    }
+
+    CGKeyCode v = (CGKeyCode)keycode;
     CGEventRef keyDown = CGEventCreateKeyboardEvent(NULL, v, true);
     CGEventRef keyUp   = CGEventCreateKeyboardEvent(NULL, v, false);
 
@@ -93,6 +107,7 @@ void simulateCmdV(void) {
 
     CFRelease(keyDown);
     CFRelease(keyUp);
+    return 1;
 }
 */
 import "C"
@@ -125,7 +140,11 @@ func TypeText(text string) error {
 	time.Sleep(50 * time.Millisecond)
 
 	// Post Cmd+V via CGEvent (works regardless of which app is focused).
-	C.simulateCmdV()
+	// When the paste key is unknown the text stays on the clipboard for the user
+	// to paste by hand, as in auto-paste off mode, so it is not lost.
+	if C.simulateCmdV() != 1 {
+		return ErrPasteKeyUnknown
+	}
 
 	// Give the focused app time to consume the paste, then restore user clipboard.
 	time.Sleep(250 * time.Millisecond)
@@ -137,7 +156,8 @@ func TypeText(text string) error {
 }
 
 // pasteKeycode reports the virtual keycode that TypeText posts Cmd+V to under
-// the active keyboard layout.
+// the active keyboard layout. A negative result means the layout could not be
+// read and no paste was posted.
 func pasteKeycode() int {
 	return int(C.pasteKeycode())
 }
