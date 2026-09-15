@@ -88,7 +88,8 @@ UniChar charForPasteKeycode(void) {
 
 // simulateCmdV posts Cmd+V keyboard events to the system. It returns 0 without
 // posting anything when the active keyboard layout cannot be read, since any
-// keycode picked blind would fire whatever unrelated shortcut sits there.
+// keycode picked blind would fire whatever unrelated shortcut sits there, or
+// when the events cannot be allocated.
 int simulateCmdV(void) {
     int keycode = pasteKeycode();
     if (keycode == pasteKeyUnknown) {
@@ -98,6 +99,15 @@ int simulateCmdV(void) {
     CGKeyCode v = (CGKeyCode)keycode;
     CGEventRef keyDown = CGEventCreateKeyboardEvent(NULL, v, true);
     CGEventRef keyUp   = CGEventCreateKeyboardEvent(NULL, v, false);
+    if (keyDown == NULL || keyUp == NULL) {
+        if (keyDown != NULL) {
+            CFRelease(keyDown);
+        }
+        if (keyUp != NULL) {
+            CFRelease(keyUp);
+        }
+        return 0;
+    }
 
     CGEventSetFlags(keyDown, kCGEventFlagMaskCommand);
     CGEventSetFlags(keyUp, kCGEventFlagMaskCommand);
