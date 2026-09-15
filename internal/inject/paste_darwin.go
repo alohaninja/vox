@@ -23,7 +23,7 @@ static UniChar charInLayout(const UCKeyboardLayout *layout, CGKeyCode keycode) {
     UniCharCount len = 0;
     OSStatus status = UCKeyTranslate(
         layout, keycode, kUCKeyActionDown, (cmdKey >> 8) & 0xFF, LMGetKbdType(),
-        kUCKeyTranslateNoDeadKeysBit, &deadKeyState, 4, &len, chars
+        kUCKeyTranslateNoDeadKeysMask, &deadKeyState, 4, &len, chars
     );
     if (status != noErr || len != 1) {
         return 0;
