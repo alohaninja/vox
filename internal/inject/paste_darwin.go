@@ -31,57 +31,66 @@ static UniChar charInLayout(const UCKeyboardLayout *layout, CGKeyCode keycode) {
     return chars[0];
 }
 
+// activeKeyboardLayout returns the active ASCII-capable keyboard layout, or
+// NULL if it cannot be read. On success the caller owns *src and must release
+// it; the returned layout points into *src and dies with it. Callers resolve
+// the layout once so a mid-call input source switch cannot split their answer
+// across two layouts.
+static const UCKeyboardLayout *activeKeyboardLayout(TISInputSourceRef *src) {
+    *src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
+    if (*src == NULL) {
+        return NULL;
+    }
+
+    CFDataRef data = (CFDataRef)TISGetInputSourceProperty(*src, kTISPropertyUnicodeKeyLayoutData);
+    if (data == NULL) {
+        CFRelease(*src);
+        *src = NULL;
+        return NULL;
+    }
+
+    return (const UCKeyboardLayout *)CFDataGetBytePtr(data);
+}
+
+// pasteKeycodeInLayout returns the key that produces 'v' in the given layout,
+// or pasteKeyUnknown if no key does.
+static int pasteKeycodeInLayout(const UCKeyboardLayout *layout) {
+    for (CGKeyCode keycode = 0; keycode < 128; keycode++) {
+        if (charInLayout(layout, keycode) == 'v') {
+            return keycode;
+        }
+    }
+    return pasteKeyUnknown;
+}
+
 // pasteKeycode returns the key that produces 'v' under the active keyboard
 // layout, or pasteKeyUnknown if that layout cannot be read. Applications match
 // Cmd+V by character rather than by keycode, and layouts such as Dvorak put 'v'
 // on a different physical key than QWERTY.
 // The lookup runs per paste so switching input sources takes effect at once.
 int pasteKeycode(void) {
-    TISInputSourceRef src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
-    if (src == NULL) {
+    TISInputSourceRef src = NULL;
+    const UCKeyboardLayout *layout = activeKeyboardLayout(&src);
+    if (layout == NULL) {
         return pasteKeyUnknown;
     }
 
-    CFDataRef data = (CFDataRef)TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData);
-    if (data == NULL) {
-        CFRelease(src);
-        return pasteKeyUnknown;
-    }
-
-    const UCKeyboardLayout *layout = (const UCKeyboardLayout *)CFDataGetBytePtr(data);
-    int result = pasteKeyUnknown;
-    for (CGKeyCode keycode = 0; keycode < 128; keycode++) {
-        if (charInLayout(layout, keycode) == 'v') {
-            result = keycode;
-            break;
-        }
-    }
-
+    int keycode = pasteKeycodeInLayout(layout);
     CFRelease(src);
-    return result;
+    return keycode;
 }
 
 // charForPasteKeycode returns the character the resolved paste key produces
 // while Command is held, or 0 if the active layout cannot be read.
 UniChar charForPasteKeycode(void) {
-    TISInputSourceRef src = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
-    if (src == NULL) {
+    TISInputSourceRef src = NULL;
+    const UCKeyboardLayout *layout = activeKeyboardLayout(&src);
+    if (layout == NULL) {
         return 0;
     }
 
-    CFDataRef data = (CFDataRef)TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData);
-    if (data == NULL) {
-        CFRelease(src);
-        return 0;
-    }
-
-    int keycode = pasteKeycode();
-    if (keycode == pasteKeyUnknown) {
-        CFRelease(src);
-        return 0;
-    }
-
-    UniChar ch = charInLayout((const UCKeyboardLayout *)CFDataGetBytePtr(data), (CGKeyCode)keycode);
+    int keycode = pasteKeycodeInLayout(layout);
+    UniChar ch = (keycode == pasteKeyUnknown) ? 0 : charInLayout(layout, (CGKeyCode)keycode);
     CFRelease(src);
     return ch;
 }
