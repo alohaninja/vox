@@ -60,7 +60,7 @@ make fmt       # gofmt
 ## Critical Notes
 
 1. **CGEventTap requires Accessibility permission.** Checks `AXIsProcessTrusted()` at startup.
-2. **Paste uses CGEvent, not osascript.** `CGEventCreateKeyboardEvent` posts Cmd+V directly to the system.
+2. **Paste uses CGEvent, not osascript.** `CGEventCreateKeyboardEvent` posts Cmd+V directly to the system. The keycode is resolved from the active keyboard layout via `UCKeyTranslate`, not hardcoded — Dvorak and similar layouts put `v` on a different physical key than QWERTY.
 3. **Modifier-only hotkey cancellation.** If cmd+shift is held then a regular key is pressed, recording cancels (distinguishes dictation from keyboard shortcuts).
 4. **Whisper endpoint auto-detection.** Probes `/v1/audio/transcriptions` first, falls back to `/inference` (whisper.cpp native). Cached after first probe.
 5. **Sound playback.** Chimes are `go:embed`ded WAVs written to temp files and played via `afplay`. Cleaned up after playback.

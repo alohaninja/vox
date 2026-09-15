@@ -17,6 +17,18 @@ func TestTypeTextEmpty(t *testing.T) {
 	}
 }
 
+func TestPasteKeycodeProducesV(t *testing.T) {
+	// The paste key must produce 'v' on the active layout, not merely sit where
+	// 'v' is on QWERTY. Dvorak puts 'v' on keycode 47, where keycode 9 is 'k'.
+	got := charForPasteKeycode()
+	if got == 0 {
+		t.Skip("active keyboard layout unavailable")
+	}
+	if got != 'v' {
+		t.Errorf("keycode %d produces %q with Command held, want 'v'", pasteKeycode(), got)
+	}
+}
+
 func TestCopyToClipboard(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping clipboard test in short mode")
