@@ -20,6 +20,11 @@ func TestTypeTextEmpty(t *testing.T) {
 func TestPasteKeycodeProducesV(t *testing.T) {
 	// The paste key must produce 'v' on the active layout, not merely sit where
 	// 'v' is on QWERTY. Dvorak puts 'v' on keycode 47, where keycode 9 is 'k'.
+	//
+	// This checks the property, not the mechanism: on a US QWERTY machine 'v' is
+	// at keycode 9, so a hardcoded 9 would pass too. Catching that needs a
+	// non-QWERTY layout selected, which CI cannot arrange -- run it on a Dvorak
+	// machine to exercise the lookup for real.
 	got := charForPasteKeycode()
 	if got == 0 {
 		t.Skip("active keyboard layout unavailable")
