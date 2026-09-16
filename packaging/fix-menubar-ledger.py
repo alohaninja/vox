@@ -65,12 +65,19 @@ def main(argv):
     entries = plistlib.loads(raw) if nested else raw
 
     changed = 0
+    skipped = []
     for rec in entries:
         if not isinstance(rec, dict) or "menuItemLocations" not in rec:
             continue
         owner = bid(rec.get("location"))
+        allowed = rec.get("isAllowed")
+        if not isinstance(allowed, bool):
+            # Matches the doctor: an isAllowed we can't read is "unknown",
+            # and we never rewrite a record we don't understand.
+            skipped.append(owner)
+            continue
         if owner == target:
-            if not rec.get("isAllowed", True):
+            if not allowed:
                 rec["isAllowed"] = True
                 changed += 1
                 print(f"  {owner}: isAllowed False -> True")
@@ -81,6 +88,10 @@ def main(argv):
             rec["menuItemLocations"] = after
             changed += 1
             print(f"  {owner} (isAllowed={rec.get('isAllowed')}): removed reference to {target}")
+
+    if skipped:
+        print(f"  skipped {len(skipped)} record(s) with missing/non-bool isAllowed: {skipped}")
+        print("  (run `make doctor` -- these show as INCONCLUSIVE; not touched here)")
 
     if not changed:
         print(f"nothing to change -- no foreign references to {target}")
@@ -93,6 +104,7 @@ def main(argv):
     backup = os.path.expanduser(
         f"~/Desktop/group.com.apple.controlcenter.plist.bak-{time.strftime('%Y%m%d-%H%M%S')}"
     )
+    os.makedirs(os.path.dirname(backup), exist_ok=True)
     shutil.copy2(PLIST, backup)
     print(f"\nbackup -> {backup}")
 

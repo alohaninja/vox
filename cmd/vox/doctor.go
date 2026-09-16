@@ -88,7 +88,7 @@ func runDoctor() {
 func doctorProcess() checkResult {
 	fmt.Println("[1/3] Process")
 	pids := runningVoxPIDs()
-	pidfile := filepath.Join("logs", "vox.pid")
+	pidfile := pidFilePath()
 	filePID, fileErr := readPIDFile(pidfile)
 
 	switch {
@@ -100,9 +100,13 @@ func doctorProcess() checkResult {
 		fmt.Printf("  Vox:      %d instances running (%v) — only one can hold the lock\n", len(pids), pids)
 	}
 
-	if fileErr != nil {
+	if errors.Is(fileErr, os.ErrNotExist) {
 		fmt.Printf("  PID file: %s (none)\n", pidfile)
 		return checkPass
+	}
+	if fileErr != nil {
+		fmt.Printf("  PID file: %s (unreadable or malformed: %v)\n", pidfile, fileErr)
+		return checkInconclusive
 	}
 	alive := false
 	for _, p := range pids {
@@ -173,76 +177,162 @@ func doctorMenuBar() checkResult {
 		fmt.Printf("  Ledger:   cannot parse: %v\n", err)
 		return checkInconclusive
 	}
-	blob, ok := outer["trackedApplications"].([]byte)
-	if !ok {
+	rawTracked, present := outer["trackedApplications"]
+	if !present {
 		fmt.Println("  Ledger:   no trackedApplications key (Control Center has not tracked any app yet)")
 		return checkPass
 	}
-
-	rep, err := analyzeStatusItemLedger(blob, bundleID)
+	entries, err := decodeTrackedApplications(rawTracked)
 	if err != nil {
 		fmt.Printf("  Ledger:   cannot decode trackedApplications: %v\n", err)
+		fmt.Println("  Verdict:      INCONCLUSIVE")
 		return checkInconclusive
 	}
+	rep := analyzeTrackedApplications(entries, bundleID)
 
 	switch {
 	case !rep.ownFound:
 		fmt.Printf("  Own record:   %s — not present (never launched, or ledger was reset)\n", bundleID)
-	case rep.ownAllowed:
+	case rep.ownAllowed == allowYes:
 		fmt.Printf("  Own record:   %s — allowed\n", bundleID)
+	case rep.ownAllowed == allowNo:
+		fmt.Printf("  Own record:   %s — DISALLOWED\n", bundleID)
 	default:
-		fmt.Printf("  Own record:   %s — DISALLOWED (toggle it on in System Settings > Menu Bar)\n", bundleID)
+		fmt.Printf("  Own record:   %s — isAllowed missing or unreadable\n", bundleID)
 	}
 
+	foreignVeto := false
 	for _, fo := range rep.foreignOwners {
-		state := "allowed (harmless)"
-		if !fo.allowed {
+		var state string
+		switch fo.allowed {
+		case allowYes:
+			state = "allowed (harmless)"
+		case allowNo:
 			state = "DISALLOWED — this is blocking Vox"
+			foreignVeto = true
+		default:
+			state = "isAllowed missing or unreadable"
 		}
 		fmt.Printf("  Foreign owner: %s — %s\n", fo.id, state)
 	}
 
-	if !rep.blocked() {
+	switch {
+	case rep.blocked():
+		fmt.Println("  Verdict:      BLOCKED")
+		fmt.Println()
+		if foreignVeto {
+			fmt.Println("  Vox's own toggle in System Settings > Menu Bar cannot fix this: another app")
+			fmt.Println("  that is switched OFF there has claimed Vox's status item. Either switch that")
+			fmt.Println("  app ON in System Settings > Menu Bar, or remove the stale reference:")
+			fmt.Println("      make doctor-fix")
+			fmt.Println("  Then launch Vox from Finder or a plain terminal — not from inside an IDE or")
+			fmt.Println("  agent — so Control Center attributes the item to Vox alone.")
+		} else {
+			fmt.Println("  Vox is switched OFF in System Settings > Menu Bar. Toggle it on there.")
+		}
+		return checkFail
+	case rep.inconclusive():
+		fmt.Println("  Verdict:      INCONCLUSIVE (a record's isAllowed could not be read)")
+		return checkInconclusive
+	default:
 		fmt.Println("  Verdict:      OK")
 		return checkPass
 	}
+}
 
-	fmt.Println("  Verdict:      BLOCKED")
-	fmt.Println()
-	fmt.Println("  Vox's own toggle in System Settings > Menu Bar cannot fix this: another app")
-	fmt.Println("  that is switched OFF there has claimed Vox's status item. Either switch that")
-	fmt.Println("  app ON in System Settings > Menu Bar, or remove the stale reference:")
-	fmt.Println("      make doctor-fix")
-	fmt.Println("  Then launch Vox from Finder or a plain terminal — not from inside an IDE or")
-	fmt.Println("  agent — so Control Center attributes the item to Vox alone.")
-	return checkFail
+// allowState is a record's isAllowed value. Control Center has always
+// written an explicit bool in the ledgers we've seen; if one is missing or
+// not a bool we do not guess what the system defaults to — we report it as
+// unknown and let the overall verdict be inconclusive.
+type allowState int
+
+const (
+	allowUnknown allowState = iota
+	allowYes
+	allowNo
+)
+
+func (a allowState) String() string {
+	switch a {
+	case allowYes:
+		return "allowed"
+	case allowNo:
+		return "disallowed"
+	}
+	return "unknown"
+}
+
+func allowStateOf(v any) allowState {
+	b, ok := v.(bool)
+	switch {
+	case !ok:
+		return allowUnknown
+	case b:
+		return allowYes
+	default:
+		return allowNo
+	}
 }
 
 // ledgerReport is the result of inspecting trackedApplications for one app.
 type ledgerReport struct {
 	ownFound      bool
-	ownAllowed    bool
+	ownAllowed    allowState
 	foreignOwners []ledgerOwner
 }
 
 // ledgerOwner is another app whose menuItemLocations reference our bundle ID.
 type ledgerOwner struct {
 	id      string
-	allowed bool
+	allowed allowState
 }
 
 // blocked is true when Control Center will hide the item: either our own
-// record is disallowed, or some other app that references us is disallowed.
+// record is explicitly disallowed, or some other app that references us is
+// explicitly disallowed. Unknown states never count as a veto.
 func (r ledgerReport) blocked() bool {
-	if r.ownFound && !r.ownAllowed {
+	if r.ownFound && r.ownAllowed == allowNo {
 		return true
 	}
 	for _, fo := range r.foreignOwners {
-		if !fo.allowed {
+		if fo.allowed == allowNo {
 			return true
 		}
 	}
 	return false
+}
+
+// inconclusive is true when any relevant record has an isAllowed value we
+// could not interpret. A report can be inconclusive and not blocked.
+func (r ledgerReport) inconclusive() bool {
+	if r.ownFound && r.ownAllowed == allowUnknown {
+		return true
+	}
+	for _, fo := range r.foreignOwners {
+		if fo.allowed == allowUnknown {
+			return true
+		}
+	}
+	return false
+}
+
+// decodeTrackedApplications accepts the trackedApplications value in either
+// on-disk encoding: an embedded binary plist ([]byte) — what current macOS
+// writes — or an already-decoded array ([]any). Anything else is an error so
+// the caller reports the check as inconclusive rather than passing it.
+func decodeTrackedApplications(v any) ([]any, error) {
+	switch x := v.(type) {
+	case []byte:
+		var entries []any
+		if _, err := plist.Unmarshal(x, &entries); err != nil {
+			return nil, fmt.Errorf("embedded plist: %w", err)
+		}
+		return entries, nil
+	case []any:
+		return x, nil
+	default:
+		return nil, fmt.Errorf("unexpected trackedApplications type %T", v)
+	}
 }
 
 // analyzeStatusItemLedger decodes the nested trackedApplications plist and
@@ -253,11 +343,14 @@ func (r ledgerReport) blocked() bool {
 //	  menuItemLocations: [ {bundle:{_0: id}}, ... ],
 //	  isAllowed: bool }
 func analyzeStatusItemLedger(blob []byte, target string) (ledgerReport, error) {
-	var entries []any
-	if _, err := plist.Unmarshal(blob, &entries); err != nil {
+	entries, err := decodeTrackedApplications(blob)
+	if err != nil {
 		return ledgerReport{}, err
 	}
+	return analyzeTrackedApplications(entries, target), nil
+}
 
+func analyzeTrackedApplications(entries []any, target string) ledgerReport {
 	var rep ledgerReport
 	for _, e := range entries {
 		rec, ok := e.(map[string]any)
@@ -269,7 +362,7 @@ func analyzeStatusItemLedger(blob []byte, target string) (ledgerReport, error) {
 			continue
 		}
 		owner := bundleIDOf(rec["location"])
-		allowed, _ := rec["isAllowed"].(bool)
+		allowed := allowStateOf(rec["isAllowed"])
 
 		if owner == target {
 			rep.ownFound = true
@@ -283,7 +376,7 @@ func analyzeStatusItemLedger(blob []byte, target string) (ledgerReport, error) {
 			}
 		}
 	}
-	return rep, nil
+	return rep
 }
 
 // bundleIDOf extracts the _0 string from a {bundle:{_0: id}} node.
@@ -300,26 +393,58 @@ func bundleIDOf(node any) string {
 	return s
 }
 
-// runningVoxPIDs finds live vox processes by executable path, independent of
-// any pidfile.
+// pidFilePath mirrors what `make start` writes: VOX_PID_PATH if set,
+// otherwise logs/vox.pid relative to the working directory.
+func pidFilePath() string {
+	if p := os.Getenv("VOX_PID_PATH"); p != "" {
+		return p
+	}
+	return filepath.Join("logs", "vox.pid")
+}
+
+// voxExecutableSuffix is the tail of the bundled executable's path.
+const voxExecutableSuffix = "Vox.app/Contents/MacOS/vox"
+
+// isVoxExecutable reports whether exe (argv[0] / the executable path) is the
+// bundled Vox binary, as opposed to some other program that merely has the
+// path in its arguments (an editor, `tail -f`, a shell).
+func isVoxExecutable(exe string) bool {
+	return exe == voxExecutableSuffix || strings.HasSuffix(exe, "/"+voxExecutableSuffix)
+}
+
+// runningVoxPIDs finds live vox processes independent of any pidfile.
+// `pgrep -f` matches the whole command line, so each candidate's actual
+// executable path is checked before it is counted.
 func runningVoxPIDs() []int {
-	out, err := exec.Command("pgrep", "-f", "Vox.app/Contents/MacOS/vox").Output()
+	out, err := exec.Command("pgrep", "-f", voxExecutableSuffix).Output()
 	if err != nil {
 		return nil
 	}
 	var pids []int
 	for _, line := range strings.Fields(string(out)) {
-		if p, err := strconv.Atoi(line); err == nil && p != os.Getpid() {
-			pids = append(pids, p)
+		p, err := strconv.Atoi(line)
+		if err != nil || p == os.Getpid() {
+			continue
 		}
+		exe, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(p)).Output()
+		if err != nil || !isVoxExecutable(strings.TrimSpace(string(exe))) {
+			continue
+		}
+		pids = append(pids, p)
 	}
 	return pids
 }
 
+// readPIDFile returns os.ErrNotExist (wrapped) when the file is absent, so
+// callers can distinguish "never started" from "corrupt pidfile".
 func readPIDFile(path string) (int, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return 0, err
 	}
-	return strconv.Atoi(strings.TrimSpace(string(b)))
+	p, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0, fmt.Errorf("pidfile %s: %w", path, err)
+	}
+	return p, nil
 }
