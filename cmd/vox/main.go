@@ -28,15 +28,21 @@ import (
 	"vox/internal/format"
 	"vox/internal/hotkey"
 	"vox/internal/inject"
+	"vox/internal/notify"
 	"vox/internal/pipeline"
 	"vox/internal/prompt"
+	"vox/internal/sttmodel"
 	"vox/internal/transcribe"
 	"vox/internal/ui"
 	"vox/internal/userconfig"
 	"vox/internal/vocab"
-	"vox/internal/whispermodel"
-	"vox/internal/whisperserver"
 )
+
+// notifier posts native OS notifications for state changes the user cannot
+// see in the terminal: an engine falling back at startup, or a menubar model
+// switch that failed. The notify package exposes a Notifier interface rather
+// than a package-level Send, so construct one here and share it.
+var notifier = notify.New()
 
 const (
 	banner = `
@@ -74,9 +80,9 @@ var settings runtimeSettings
 // pause click, so the user expects that one final transcription to land.
 var processMu sync.Mutex
 
-// currentWhisperModelID holds the catalog model ID (e.g. base.en) loaded by
-// whisper-server so removing a model can switch away from the active file first.
-var currentWhisperModelID atomic.Value // string
+// currentModelID holds the catalog model ID (e.g. base.en, parakeet-v2) loaded
+// by the active engine so removing a model can switch away first.
+var currentModelID atomic.Value // string
 
 // modelMu serializes model-change and model-delete operations so they cannot
 // interleave (e.g. switching to a model while a delete is mid-fallback).
@@ -163,40 +169,51 @@ func run() {
 		os.Exit(1)
 	}
 
-	// Resolve selected whisper model + start the embedded whisper-server child.
-	selectedModel, ok := whispermodel.ByID(cfg.ModelID)
-	if !ok {
-		selectedModel, _ = whispermodel.ByID(whispermodel.DefaultID)
-	}
-	if !whispermodel.IsInstalled(selectedModel) {
-		fmt.Printf("Selected model %q is not installed, downloading...\n", selectedModel.ID)
-		if err := whispermodel.Download(ctx, selectedModel, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "Error downloading model %q: %v\n", selectedModel.ID, err)
-			os.Exit(1)
-		}
-	}
-	whisperSrv, err := whisperserver.New("127.0.0.1", 2022, whisperLogPath())
+	// Resolve the configured engine/model and bring up its backend.
+	selectedModel, err := resolveEngineModel(cfg.ModelID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	modelPath, err := whispermodel.Path(selectedModel)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	if !sttmodel.IsInstalled(selectedModel) {
+		fmt.Printf("Selected model %q is not installed, downloading (%d MiB)...\n",
+			selectedModel.ID, selectedModel.SizeMB)
+	}
+	activeEngine, degraded, startErr := startEngineWithFallback(ctx, selectedModel, whisperLogPath(),
+		func(done, total int64) {
+			if total > 0 {
+				fmt.Printf("\r  %d%%", done*100/total)
+			}
+		})
+	// A nil engine is the only fatal case. A non-nil engine with a non-nil
+	// error means "running, but degraded" — do not exit.
+	if activeEngine == nil {
+		fmt.Fprintf(os.Stderr, "Error starting speech engine: %v\n", startErr)
 		os.Exit(1)
 	}
-	if err := whisperSrv.Start(ctx, modelPath); err != nil {
-		fmt.Fprintf(os.Stderr, "Error starting whisper-server: %v\n", err)
-		os.Exit(1)
+	if degraded {
+		logger.Warn("stt engine fell back",
+			"requested", selectedModel.ID,
+			"active", activeEngine.model.ID,
+			"error", startErr)
+		fmt.Printf("Warning: could not start %s (%v)\n", selectedModel.ID, startErr)
+		fmt.Printf("  Falling back to %s.\n\n", activeEngine.model.ID)
+		notifier.Send("Vox",
+			fmt.Sprintf("%s unavailable, using %s", selectedModel.ID, activeEngine.model.ID))
+		selectedModel = activeEngine.model
 	}
-	whisperClient := transcribe.NewClient(whisperSrv.URL())
-	if err := whisperClient.HealthCheck(ctx); err != nil {
-		fmt.Printf("Warning: Whisper server unavailable at %s (%v)\n", whisperSrv.URL(), err)
-		fmt.Println("  Transcription will fail until the server is reachable.")
+	if err := activeEngine.healthCheck(ctx); err != nil {
+		fmt.Printf("Warning: %s backend unavailable (%v)\n", selectedModel.Engine, err)
+		fmt.Println("  Transcription will fail until it is reachable.")
 		fmt.Println()
 	} else if cfg.Verbose {
-		logger.Debug("whisper health check passed", "url", whisperSrv.URL())
+		logger.Debug("stt engine ready", "engine", selectedModel.Engine, "model", selectedModel.ID)
 	}
+
+	// engines is the indirection the pipeline reads through, so a menubar
+	// engine switch does not require rebuilding the pipeline.
+	engines := &engineHolder{}
+	engines.set(activeEngine)
 
 	// Clean up any orphaned temp files from prior crashes in the background.
 	go func() {
@@ -283,7 +300,7 @@ func run() {
 	ui.Init(hotkeyLabel)
 	ui.SetState(ui.StateIdle)
 	ui.SetHotkeyPresets(hotkeyPresets, cfg.Hotkey)
-	currentWhisperModelID.Store(selectedModel.ID)
+	currentModelID.Store(selectedModel.ID)
 	refreshModelMenus()
 	ui.SetMode(cfg.HoldToTalk)
 	ui.SetSoundsEnabled(cfg.SoundsEnabled)
@@ -327,7 +344,7 @@ func run() {
 
 	// Build the processing pipeline with all features.
 	pipe := pipeline.New(
-		transcribeStage(whisperClient, transcribeOpts),
+		transcribeStage(engines, transcribeOpts),
 		filterBlankStage(),
 		classifyStage(classifier),
 		postProcessStage(claudeClient),
@@ -341,12 +358,12 @@ func run() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	go shutdownWatcher(cancel, logger, recorder, whisperSrv, sigCh)
+	go shutdownWatcher(cancel, logger, recorder, engines, sigCh)
 	go showLogWatcher(ctx, logger)
 	go hotkeyChangeWatcher(ctx, logger, listener)
 	go settingsWatcher(ctx, logger, recorder)
-	go modelChangeWatcher(ctx, logger, whisperClient, whisperSrv)
-	go modelDeleteWatcher(ctx, logger, whisperClient, whisperSrv)
+	go modelChangeWatcher(ctx, logger, engines, recorder)
+	go modelDeleteWatcher(ctx, logger, engines, recorder)
 	go runEventLoop(ctx, cfg, logger, listener, recorder, pipe)
 
 	// Run NSApp's main loop on the main goroutine. Returns when the user
@@ -357,15 +374,15 @@ func run() {
 // shutdownWatcher waits for either an OS signal or a menubar Quit click,
 // then cancels the context (so watcher goroutines exit), drains the
 // recorder, and tells NSApp to terminate.
-func shutdownWatcher(cancel context.CancelFunc, logger *slog.Logger, recorder *audio.Recorder, whisperSrv *whisperserver.Server, sigCh <-chan os.Signal) {
+func shutdownWatcher(cancel context.CancelFunc, logger *slog.Logger, recorder *audio.Recorder, engines *engineHolder, sigCh <-chan os.Signal) {
 	select {
 	case <-sigCh:
 	case <-ui.OnQuit():
 	}
 	cancel() // signal all watcher goroutines to stop
 	cleanup(logger, recorder)
-	if err := whisperSrv.Stop(context.Background()); err != nil {
-		logger.Warn("stop whisper-server", "error", err)
+	if err := engines.stopActive(context.Background()); err != nil {
+		logger.Warn("stop stt engine", "error", err)
 	}
 	if p := os.Getenv("VOX_LOG_PATH"); p != "" {
 		_ = os.Remove(p)
@@ -377,13 +394,17 @@ func shutdownWatcher(cancel context.CancelFunc, logger *slog.Logger, recorder *a
 }
 
 func buildModelPresets() []ui.ModelPreset {
-	models := whispermodel.All()
+	models := sttmodel.All()
 	presets := make([]ui.ModelPreset, 0, len(models))
 	for _, m := range models {
 		presets = append(presets, ui.ModelPreset{
-			ID:        m.ID,
-			Label:     m.Label,
-			Installed: whispermodel.IsInstalled(m),
+			ID:         m.ID,
+			Label:      m.Label,
+			Engine:     string(m.Engine),
+			Descriptor: m.Descriptor,
+			Badge:      m.Badge,
+			Blurb:      m.Blurb,
+			Installed:  sttmodel.IsInstalled(m),
 		})
 	}
 	return presets
@@ -391,9 +412,9 @@ func buildModelPresets() []ui.ModelPreset {
 
 func buildModelRemovePresets() []ui.ModelRemovePreset {
 	var out []ui.ModelRemovePreset
-	nInstalled := whispermodel.InstalledCount()
-	for _, m := range whispermodel.All() {
-		if whispermodel.IsInstalled(m) {
+	nInstalled := sttmodel.InstalledCount()
+	for _, m := range sttmodel.All() {
+		if sttmodel.IsInstalled(m) {
 			label := m.Label
 			if nInstalled <= 1 {
 				label = m.Label + " (required)"
@@ -409,14 +430,20 @@ func buildModelRemovePresets() []ui.ModelRemovePreset {
 }
 
 func refreshModelMenus() {
-	id, _ := currentWhisperModelID.Load().(string)
+	id, _ := currentModelID.Load().(string)
 	ui.SetModelPresets(buildModelPresets(), id)
 	ui.SetModelRemovePresets(buildModelRemovePresets())
 }
 
-func activateWhisperModel(ctx context.Context, whisperClient *transcribe.Client, whisperSrv *whisperserver.Server, model whispermodel.Model) error {
-	if !whispermodel.IsInstalled(model) {
-		err := whispermodel.Download(ctx, model, func(downloaded, total int64) {
+// activateModel switches to the given model, downloading it if needed and
+// tearing down the previous engine's backend.
+//
+// Precondition: caller must hold modelMu. activateModel reads engines.get()
+// outside the write lock and mutates the returned state inside it; concurrent
+// callers would race on the engine pointer without external serialization.
+func activateModel(ctx context.Context, engines *engineHolder, recorder *audio.Recorder, model sttmodel.Model) error {
+	if !sttmodel.IsInstalled(model) {
+		err := sttmodel.Download(ctx, model, func(downloaded, total int64) {
 			if total > 0 {
 				pct := (downloaded * 100) / total
 				ui.SetStatusLine(fmt.Sprintf("Status: Downloading %s (%d%%)…", model.ID, pct))
@@ -428,33 +455,74 @@ func activateWhisperModel(ctx context.Context, whisperClient *transcribe.Client,
 			return err
 		}
 	}
-	path, err := whispermodel.Path(model)
-	if err != nil {
-		return err
-	}
+
 	ui.SetStatusLine(fmt.Sprintf("Status: Switching to %s…", model.ID))
 	processMu.Lock()
 	defer processMu.Unlock()
-	switchErr := whisperSrv.Switch(ctx, path)
-	if switchErr == nil {
-		whisperClient.ResetEndpoint()
+
+	// Recording holds the audio path; swapping engines underneath it would
+	// drop the in-flight utterance. Note this guard only covers the recording
+	// window — the transcription window is covered by engineHolder's write
+	// lock, because by then the recorder has already stopped.
+	if recorder != nil && recorder.IsRecording() {
+		return fmt.Errorf("cannot switch models while recording")
 	}
-	return switchErr
+
+	prev := engines.get()
+
+	// Fast path: same engine family and a running whisper server, so just
+	// swap the loaded model instead of restarting the process.
+	//
+	// This mutates the live engine in place rather than going through
+	// engineHolder.swap, so it must not run concurrently with a
+	// transcription. whisperserver.Switch stops and restarts the child
+	// process underneath the HTTP client. Take the holder's write lock for
+	// the duration.
+	if prev != nil && prev.whisperSrv != nil && model.Engine == sttmodel.EngineWhisper {
+		// ResolvePath, not Path: honor a legacy install location so switching
+		// to a pre-split model does not point whisper-server at a path that
+		// has nothing in it.
+		path, err := sttmodel.ResolvePath(model)
+		if err != nil {
+			return err
+		}
+		return engines.withWriteLock(func() error {
+			if err := prev.whisperSrv.Switch(ctx, path); err != nil {
+				return err
+			}
+			prev.whisperClient.ResetEndpoint()
+			prev.model = model
+			return nil
+		})
+	}
+
+	next, err := startEngine(ctx, model, whisperLogPath(), nil)
+	if err != nil {
+		return err
+	}
+	// swap installs the new engine and stops the old one under the write
+	// lock, so no transcription can be running against the old backend.
+	if err := engines.swap(ctx, next); err != nil {
+		return fmt.Errorf("switched to %s but failed to stop previous engine: %w", model.ID, err)
+	}
+	return nil
 }
 
-func pickFallbackModel(excludeID string) (whispermodel.Model, error) {
-	// Prefer any installed model that isn't the one being excluded.
-	for _, m := range whispermodel.All() {
-		if m.ID == excludeID {
-			continue
-		}
-		if whispermodel.IsInstalled(m) {
-			return m, nil
+// pickFallbackModel chooses another installed model to switch to when the
+// active one is being deleted. Same-engine models are preferred so the user
+// does not silently jump between whisper and parakeet.
+func pickFallbackModel(excludeID string, preferred sttmodel.Engine) (sttmodel.Model, bool) {
+	for _, m := range sttmodel.ByEngine(preferred) {
+		if m.ID != excludeID && sttmodel.IsInstalled(m) {
+			return m, true
 		}
 	}
-	// No installed fallback found — return an error rather than silently
-	// triggering a download for a non-installed model.
-	return whispermodel.Model{}, fmt.Errorf("no installed fallback model (excluding %s)", excludeID)
+	for _, m := range sttmodel.All() {
+		if m.ID != excludeID && sttmodel.IsInstalled(m) {
+			return m, true
+		}
+	}
+	return sttmodel.Model{}, false
 }
 
 func whisperLogPath() string {
@@ -518,14 +586,14 @@ func hotkeyChangeWatcher(ctx context.Context, logger *slog.Logger, listener *hot
 	}
 }
 
-func modelChangeWatcher(ctx context.Context, logger *slog.Logger, client *transcribe.Client, whisperSrv *whisperserver.Server) {
+func modelChangeWatcher(ctx context.Context, logger *slog.Logger, engines *engineHolder, recorder *audio.Recorder) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case modelID := <-ui.OnModelChange():
 			modelMu.Lock()
-			model, ok := whispermodel.ByID(modelID)
+			model, ok := sttmodel.ByID(modelID)
 			if !ok {
 				logger.Warn("unknown model selected", "id", modelID)
 				modelMu.Unlock()
@@ -535,16 +603,20 @@ func modelChangeWatcher(ctx context.Context, logger *slog.Logger, client *transc
 			ui.SetModelMenuEnabled(false)
 			ui.SetStatusLine(fmt.Sprintf("Status: Preparing model %s…", model.ID))
 
-			if err := activateWhisperModel(ctx, client, whisperSrv, model); err != nil {
-				logger.Warn("switch whisper model", "id", model.ID, "error", err)
-				ui.SetStatusLine("Status: Idle")
+			if err := activateModel(ctx, engines, recorder, model); err != nil {
+				logger.Error("switch model", "model", model.ID, "error", err)
+				ui.SetStatusLine(fmt.Sprintf("Status: Failed to load %s", model.ID))
 				ui.SetModelMenuEnabled(true)
+				// refreshModelMenus restores the checkmark to the model that
+				// is still active, so the menu does not claim a switch that
+				// did not happen.
 				refreshModelMenus()
+				notifier.Send("Vox", fmt.Sprintf("Could not switch to %s: %v", model.ID, err))
 				modelMu.Unlock()
 				continue
 			}
 
-			currentWhisperModelID.Store(model.ID)
+			currentModelID.Store(model.ID)
 			refreshModelMenus()
 			ui.SetStatusLine("Status: Idle")
 			ui.SetModelMenuEnabled(true)
@@ -557,19 +629,19 @@ func modelChangeWatcher(ctx context.Context, logger *slog.Logger, client *transc
 	}
 }
 
-func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, whisperClient *transcribe.Client, whisperSrv *whisperserver.Server) {
+func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, engines *engineHolder, recorder *audio.Recorder) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case modelID := <-ui.OnModelDelete():
 			modelMu.Lock()
-			model, ok := whispermodel.ByID(modelID)
-			if !ok || !whispermodel.IsInstalled(model) {
+			model, ok := sttmodel.ByID(modelID)
+			if !ok || !sttmodel.IsInstalled(model) {
 				modelMu.Unlock()
 				continue
 			}
-			if whispermodel.InstalledCount() <= 1 {
+			if sttmodel.InstalledCount() <= 1 {
 				logger.Info("refusing remove: last downloaded model", "id", modelID)
 				ui.SetStatusLine("Status: Idle")
 				fmt.Printf("Can't remove your only downloaded model.\n")
@@ -580,17 +652,20 @@ func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, whisperClient 
 			ui.SetModelMenuEnabled(false)
 			ui.SetStatusLine(fmt.Sprintf("Status: Removing %s…", model.ID))
 
-			active, _ := currentWhisperModelID.Load().(string)
+			active, _ := currentModelID.Load().(string)
 			if modelID == active {
-				fallback, err := pickFallbackModel(modelID)
-				if err != nil {
-					logger.Warn("delete active model: no fallback", "id", modelID, "error", err)
+				// Prefer a fallback from the same engine family so deleting a
+				// model does not silently move the user between whisper and
+				// parakeet.
+				fallback, ok := pickFallbackModel(modelID, model.Engine)
+				if !ok {
+					logger.Warn("delete active model: no installed fallback", "id", modelID)
 					ui.SetStatusLine("Status: Idle")
 					ui.SetModelMenuEnabled(true)
 					modelMu.Unlock()
 					continue
 				}
-				if err := activateWhisperModel(ctx, whisperClient, whisperSrv, fallback); err != nil {
+				if err := activateModel(ctx, engines, recorder, fallback); err != nil {
 					logger.Warn("switch before model delete", "id", modelID, "fallback", fallback.ID, "error", err)
 					ui.SetStatusLine("Status: Idle")
 					ui.SetModelMenuEnabled(true)
@@ -598,13 +673,13 @@ func modelDeleteWatcher(ctx context.Context, logger *slog.Logger, whisperClient 
 					modelMu.Unlock()
 					continue
 				}
-				currentWhisperModelID.Store(fallback.ID)
+				currentModelID.Store(fallback.ID)
 				if err := config.SavePref(func(p *config.Prefs) { p.Model = fallback.ID }); err != nil {
 					logger.Warn("save prefs", "field", "model", "error", err)
 				}
 			}
 
-			if err := whispermodel.Remove(model); err != nil {
+			if err := sttmodel.Remove(model); err != nil {
 				logger.Warn("remove model file", "id", model.ID, "error", err)
 				ui.SetStatusLine("Status: Remove failed")
 			} else {
@@ -917,8 +992,8 @@ func handleStopAndProcess(
 	fmt.Println("Ready!")
 }
 
-// transcribeStage returns a pipeline stage that sends audio to the Whisper API.
-func transcribeStage(client *transcribe.Client, opts transcribe.TranscribeOptions) pipeline.Stage {
+// transcribeStage returns a pipeline stage that converts recorded audio to text.
+func transcribeStage(client transcribe.Transcriber, opts transcribe.TranscribeOptions) pipeline.Stage {
 	return func(ctx context.Context, r *pipeline.Result) error {
 		text, err := client.Transcribe(ctx, r.RawAudio, opts)
 		if err != nil {
