@@ -96,6 +96,9 @@ func run() {
 		case "setup":
 			runSetup()
 			return
+		case "doctor":
+			runDoctor()
+			return
 		case "config":
 			runConfig()
 			return
